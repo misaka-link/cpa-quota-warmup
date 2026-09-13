@@ -41,6 +41,18 @@ func handlePanelRequest(req pluginapi.ManagementRequest) pluginapi.ManagementRes
 // catalog as window.__I18N__ so the page's own JS can re-render everything
 // in the visitor's actual cli-proxy-language/navigator-detected language,
 // which can differ from what the server guessed from Accept-Language.
+//
+// The server-side substitution above is not the only place these strings
+// get set: every element carrying that substituted text also carries a
+// data-i18n (or data-i18n-placeholder) attribute naming the same key, and
+// the page's own JS re-applies t(key) to all of them as soon as it has
+// resolved the visitor's actual language from cli-proxy-language/navigator.
+// Without that second pass, a visitor whose Accept-Language disagrees with
+// their stored console language (the common case for a headless browser,
+// which sends its OS/CLI default Accept-Language while an operator's
+// localStorage says otherwise) would see the server's first guess baked
+// into static text forever, since only the *dynamically rendered* rows
+// (config table, accounts, recent) were ever re-translated client-side.
 func renderPanelHTML(l lang, catalogJSON []byte) []byte {
 	table, ok := messagesByLang[l]
 	if !ok {
@@ -78,7 +90,7 @@ const panelHTMLTemplate = `<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{{ui_page_title}}</title>
+<title data-i18n="ui_page_title">{{ui_page_title}}</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='6' fill='none' stroke='%23d97706' stroke-width='2'/%3E%3Cpath d='M8 4v4l3 2' fill='none' stroke='%23d97706' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E">
 <script>
   // Mirror the CPA Management Center theme. It persists the choice under the
@@ -235,54 +247,54 @@ const panelHTMLTemplate = `<!doctype html>
 <div class="wrap">
   <header class="top">
     <div class="title">
-      <h1>{{ui_page_title}}</h1>
-      <p>{{ui_page_subtitle}}</p>
+      <h1 data-i18n="ui_page_title">{{ui_page_title}}</h1>
+      <p data-i18n="ui_page_subtitle">{{ui_page_subtitle}}</p>
     </div>
-    <button type="button" class="ghost-btn" id="refreshBtn">{{ui_refresh}}</button>
+    <button type="button" class="ghost-btn" id="refreshBtn" data-i18n="ui_refresh">{{ui_refresh}}</button>
   </header>
 
   <div class="err" id="error" hidden></div>
 
   <section class="block">
-    <div class="block-head"><h2>{{ui_section_config}}</h2></div>
+    <div class="block-head"><h2 data-i18n="ui_section_config">{{ui_section_config}}</h2></div>
     <div class="scroll"><table class="kv"><tbody id="configTable"></tbody></table></div>
     <p class="hint" id="lastTick"></p>
   </section>
 
   <section class="block">
     <div class="block-head">
-      <h2>{{ui_section_accounts}}</h2>
+      <h2 data-i18n="ui_section_accounts">{{ui_section_accounts}}</h2>
       <div class="controls">
-        <input type="text" id="authFilter" placeholder="{{ui_auth_filter_placeholder}}">
-        <button type="button" class="ghost-btn" id="runBtn">{{ui_warm_up_now}}</button>
+        <input type="text" id="authFilter" placeholder="{{ui_auth_filter_placeholder}}" data-i18n-placeholder="ui_auth_filter_placeholder">
+        <button type="button" class="ghost-btn" id="runBtn" data-i18n="ui_warm_up_now">{{ui_warm_up_now}}</button>
       </div>
     </div>
     <div class="scroll"><table id="accountsTable">
       <thead><tr>
-        <th>{{ui_col_name}}</th><th>{{ui_col_provider}}</th><th>{{ui_col_model}}</th>
-        <th>{{ui_col_times}}</th><th>{{ui_col_next_trigger}}</th><th>{{ui_col_status}}</th>
+        <th data-i18n="ui_col_name">{{ui_col_name}}</th><th data-i18n="ui_col_provider">{{ui_col_provider}}</th><th data-i18n="ui_col_model">{{ui_col_model}}</th>
+        <th data-i18n="ui_col_times">{{ui_col_times}}</th><th data-i18n="ui_col_next_trigger">{{ui_col_next_trigger}}</th><th data-i18n="ui_col_status">{{ui_col_status}}</th>
       </tr></thead>
-      <tbody><tr><td colspan="6" class="empty">{{ui_loading}}</td></tr></tbody>
+      <tbody><tr><td colspan="6" class="empty" data-i18n="ui_loading">{{ui_loading}}</td></tr></tbody>
     </table></div>
     <div id="runResult" hidden>
-      <h3>{{ui_run_result_title}}</h3>
+      <h3 data-i18n="ui_run_result_title">{{ui_run_result_title}}</h3>
       <div id="runResultBody"></div>
     </div>
   </section>
 
   <section class="block">
-    <div class="block-head"><h2>{{ui_section_recent}}</h2></div>
+    <div class="block-head"><h2 data-i18n="ui_section_recent">{{ui_section_recent}}</h2></div>
     <div class="scroll"><table id="recentTable">
       <thead><tr>
-        <th>{{ui_col_date}}</th><th>{{ui_col_time}}</th><th>{{ui_col_auth}}</th>
-        <th>{{ui_col_provider}}</th><th>{{ui_col_model}}</th><th>{{ui_col_covered}}</th>
-        <th>{{ui_col_rounds}}</th><th>{{ui_col_status_code}}</th><th>{{ui_col_warning}}</th>
+        <th data-i18n="ui_col_date">{{ui_col_date}}</th><th data-i18n="ui_col_time">{{ui_col_time}}</th><th data-i18n="ui_col_auth">{{ui_col_auth}}</th>
+        <th data-i18n="ui_col_provider">{{ui_col_provider}}</th><th data-i18n="ui_col_model">{{ui_col_model}}</th><th data-i18n="ui_col_covered">{{ui_col_covered}}</th>
+        <th data-i18n="ui_col_rounds">{{ui_col_rounds}}</th><th data-i18n="ui_col_status_code">{{ui_col_status_code}}</th><th data-i18n="ui_col_warning">{{ui_col_warning}}</th>
       </tr></thead>
-      <tbody><tr><td colspan="9" class="empty">{{ui_loading}}</td></tr></tbody>
+      <tbody><tr><td colspan="9" class="empty" data-i18n="ui_loading">{{ui_loading}}</td></tr></tbody>
     </table></div>
   </section>
 
-  <footer class="meta">{{ui_footer_note}}</footer>
+  <footer class="meta" data-i18n="ui_footer_note">{{ui_footer_note}}</footer>
 </div>
 <script id="i18n-data" type="application/json">{{I18N_JSON}}</script>
 <script>
@@ -293,6 +305,25 @@ const panelHTMLTemplate = `<!doctype html>
   var dict = catalog[lang] || catalog.en || {};
   function t(key) { return (dict && dict[key]) || key; }
   document.documentElement.setAttribute("lang", lang);
+
+  // The server already rendered every static label once, in whatever
+  // language it guessed from Accept-Language (there is no localStorage to
+  // read server-side). That guess is frequently wrong -- a headless browser
+  // sends its own OS/CLI default Accept-Language regardless of what an
+  // operator set cli-proxy-language to -- so every statically-labeled node
+  // is re-applied here now that the real client-side language is known.
+  // Anything rendered later (config/accounts/recent tables, the run result)
+  // already goes through t() directly and needs no such pass.
+  var i18nNodes = document.querySelectorAll("[data-i18n]");
+  for (var ni = 0; ni < i18nNodes.length; ni++) {
+    var node = i18nNodes[ni];
+    node.textContent = t(node.getAttribute("data-i18n"));
+  }
+  var i18nPlaceholders = document.querySelectorAll("[data-i18n-placeholder]");
+  for (var pi = 0; pi < i18nPlaceholders.length; pi++) {
+    var placeholderNode = i18nPlaceholders[pi];
+    placeholderNode.setAttribute("placeholder", t(placeholderNode.getAttribute("data-i18n-placeholder")));
+  }
   document.title = t("ui_page_title");
 
   var base = window.location.pathname.replace(/[^/]*$/, "");

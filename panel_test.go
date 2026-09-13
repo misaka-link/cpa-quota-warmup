@@ -16,6 +16,60 @@ import (
 // object, then the outer object) with no space in between.
 var placeholderPattern = regexp.MustCompile(`\{\{[a-zA-Z_.]+\}\}`)
 
+// uiPlaceholderPattern matches a {{ui_*}} placeholder specifically (as
+// opposed to placeholderPattern above, which also matches non-UI keys like
+// {{HTML_LANG}}/{{I18N_JSON}} that are never meant to carry a data-i18n
+// attribute since they are not user-facing translated text).
+var uiPlaceholderPattern = regexp.MustCompile(`\{\{(ui_[a-zA-Z_]+)\}\}`)
+
+// TestPanelTemplateStaticTextHasDataI18nAttributes guards against the v0.2.0
+// regression this was fixed for: the server-side {{ui_*}} substitution only
+// renders correctly for whatever language the *server* guessed from
+// Accept-Language (a headless browser's own OS/CLI default, not whatever an
+// operator's cli-proxy-language actually says), and static text nodes were
+// never revisited once the page's own JS learned the real client-side
+// language.
+//
+// This checks every individual occurrence, not just "is this key tagged
+// somewhere in the template": several keys (ui_page_title, ui_col_provider,
+// ui_col_model, ui_loading) appear more than once, on different elements
+// (e.g. <title> and <h1> both render ui_page_title; the accounts and recent
+// tables both have a "provider"/"model" column), and a set-membership check
+// would miss one of those elements losing its attribute as long as some
+// other element with the same key still has one.
+func TestPanelTemplateStaticTextHasDataI18nAttributes(t *testing.T) {
+	locs := uiPlaceholderPattern.FindAllStringSubmatchIndex(panelHTMLTemplate, -1)
+	if len(locs) == 0 {
+		t.Fatalf("found no {{ui_*}} placeholders in panelHTMLTemplate -- test fixture or template is broken")
+	}
+	for _, loc := range locs {
+		placeholderStart, key := loc[0], panelHTMLTemplate[loc[2]:loc[3]]
+		tag := enclosingTag(panelHTMLTemplate, placeholderStart)
+		if tag == "" {
+			t.Errorf("{{%s}} at byte %d is not inside a recognizable opening tag", key, placeholderStart)
+			continue
+		}
+		if !strings.Contains(tag, `data-i18n="`+key+`"`) && !strings.Contains(tag, `data-i18n-placeholder="`+key+`"`) {
+			t.Errorf("the element rendering {{%s}} (%s) has no matching data-i18n/data-i18n-placeholder attribute, so it will never be re-translated client-side", key, tag)
+		}
+	}
+}
+
+// enclosingTag returns the nearest "<...>" opening tag that starts before
+// pos in s (an ordinary text position, not inside a tag), i.e. the tag whose
+// content includes the text at pos. Returns "" if none is found nearby.
+func enclosingTag(s string, pos int) string {
+	open := strings.LastIndex(s[:pos], "<")
+	if open < 0 {
+		return ""
+	}
+	closeAt := strings.Index(s[open:], ">")
+	if closeAt < 0 {
+		return ""
+	}
+	return s[open : open+closeAt+1]
+}
+
 func TestRenderPanelHTMLNoLeftoverPlaceholders(t *testing.T) {
 	catalogJSON, err := i18nCatalogJSON()
 	if err != nil {
@@ -56,7 +110,7 @@ func TestRenderPanelHTMLEmbedsTranslatedTitlePerLanguage(t *testing.T) {
 	}
 	for l, want := range cases {
 		body := string(renderPanelHTML(l, catalogJSON))
-		if !strings.Contains(body, "<title>"+want+"</title>") {
+		if !strings.Contains(body, "<title data-i18n=\"ui_page_title\">"+want+"</title>") {
 			t.Errorf("language %s: rendered HTML title does not contain %q", l, want)
 		}
 		if !strings.Contains(body, "<html lang=\""+string(l)+"\">") {

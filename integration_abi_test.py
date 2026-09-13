@@ -159,6 +159,13 @@ def main() -> None:
             raise AssertionError("panel HTML does not follow the cli-proxy-theme localStorage key")
         if b"{{" in panel_body:
             raise AssertionError("panel HTML has an unreplaced {{...}} template placeholder")
+        # v0.2.1: static labels must carry data-i18n so a client whose actual
+        # cli-proxy-language disagrees with the server's Accept-Language
+        # guess (e.g. a headless browser) can still re-translate them.
+        if b'data-i18n="ui_page_title"' not in panel_body:
+            raise AssertionError("panel HTML title/h1 is missing its data-i18n attribute")
+        if b"data-i18n-placeholder=" not in panel_body:
+            raise AssertionError("panel HTML input placeholder is missing its data-i18n-placeholder attribute")
 
         # usage.handle must never error, even for an arbitrary/unrelated record.
         usage_record = {

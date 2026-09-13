@@ -153,3 +153,13 @@ curl -s 'http://127.0.0.1:8317/v0/resource/plugins/cpa-quota-warmup/run?auth=ant
 4. `ConfigFields` 的 `Description` 从纯英文改成"中文 / English"双语一句话（注册时是静态字符串，无法跟随访客浏览器语言）。
 5. **实现过程中用真实单元测试挖出一个真 bug并修复**：本机 `LANG=C.UTF-8`，`languageFromEnv` 最初把编码后缀（`.UTF-8`）剥离的顺序放在了"是不是 `C`/`POSIX`"判断之后，导致 `C.UTF-8` 被误判成英语而不是"未设置"。已把剥离顺序调整到判断之前，并补了 `TestLanguageFromEnv` 里 `C.UTF-8`/`POSIX.UTF-8` 两个用例锁定这个修复。
 6. 单元测试新增：语言协商全链路（query/Accept-Language/LANG/兜底，含优先级）、`tr()` 缺失语言/缺失 key 回退、四语言消息表 key 集合一致性、`status`/`run` 响应的 `lang` 字段与 `?lang=` 覆盖、`language` 配置项的规范化、面板 HTML 渲染（无残留占位符、各语言标题正确、未知语言回退英文）。ABI 集成测试新增：`management.register` 现在有 3 个资源路由（`panel`/`status`/`run`，只有 `panel` 带菜单）、`GET .../panel` 返回 `text/html` 且包含 `cli-proxy-language`/`cli-proxy-theme`、`status`/`run` 的 `?lang=` 生效。
+
+## v0.2.1（修复：状态页静态文案不跟随 cli-proxy-language）
+
+**线上实测发现的真 bug**：用 agent-browser 打开 `/panel`、在 `localStorage` 设好 `cli-proxy-language=zh-CN` 并刷新后，`document.documentElement.lang`、配置表行标签、账号状态列都已经是中文（这些走的是页面 JS 里动态渲染路径，本来就调用 `t()`），但标题、副标题、"Configuration"/"Refresh"/"Accounts" 等区块标题、表头（NAME/PROVIDER/MODEL/...）、输入框占位符、页脚这些**静态**文案仍然是英文。
+
+**根因**：这些 `{{ui_*}}` 只在服务端首屏渲染时按 `Accept-Language`（无头浏览器发的是它自己的 OS/CLI 默认值，不是 `cli-proxy-language` 里存的那个）替换过一次；页面自己的 JS 算出真实语言后，只把 `t()` 用在了"以后动态渲染"的节点（配置表、账号表、最近记录、手动执行结果），从没回头重刷这批已经写死在 HTML 里的静态文案。
+
+**修法**：模板里每一处渲染 `{{ui_*}}` 的元素都补上 `data-i18n="<key>"`（`<input>` 的 `placeholder` 用 `data-i18n-placeholder="<key>"`，`<title>` 同样处理）；页面 JS 在算出真实 `lang`/`dict` 之后，紧接着遍历 `[data-i18n]`/`[data-i18n-placeholder]` 用 `t(key)` 覆盖 `textContent`/`placeholder`，覆盖掉服务端首屏猜错的语言。服务端首屏替换本身保留（避免真的猜对时出现一次可见的重排/闪烁）。
+
+新增单测 `TestPanelTemplateStaticTextHasDataI18nAttributes`：对模板里每一个 `{{ui_*}}` 占位符出现的位置（不是去重后的 key 集合——`ui_page_title`/`ui_col_provider`/`ui_col_model`/`ui_loading` 等 key 在模板里各出现不止一次，分别在 `<title>`/`<h1>`、两张表各自的表头等不同元素上），定位其所在的最近外层标签，断言标签内必须有匹配的 `data-i18n`/`data-i18n-placeholder` 属性；用"故意去掉 `<h1>` 上的属性、保留 `<title>` 上的"的方式手动验证过这条测试确实会 fail（而不是一个形同虚设的集合子集检查）。ABI 集成测试补了两条：面板 HTML 里 `data-i18n="ui_page_title"` 与 `data-i18n-placeholder=` 都存在。
