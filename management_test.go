@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"net/url"
 	"testing"
 	"time"
 
@@ -161,5 +162,123 @@ func TestHandleMethodLifecycle(t *testing.T) {
 	}
 	if activeEngine() != nil {
 		t.Fatalf("expected shutdown to clear the active engine")
+	}
+}
+
+// TestStatusAndRunResponsesCarryLang exercises the i18n request-negotiation
+// path end to end: a bare request falls back through Accept-Language, and an
+// explicit ?lang= query parameter overrides everything, on both the status
+// and run routes, with the "lang" field in the JSON reflecting what was
+// actually used.
+func TestStatusAndRunResponsesCarryLang(t *testing.T) {
+	// Pin these so the "falls back to zh-CN" assertion below is deterministic
+	// regardless of the environment running this test suite.
+	t.Setenv("LANG", "")
+	t.Setenv("LC_ALL", "")
+
+	t.Cleanup(shutdownEngine)
+	shutdownEngine()
+
+	yamlDoc := []byte("timezone: UTC\nlanguage: auto\nproviders:\n  antigravity: { model: m }\n")
+	registerRaw, _ := json.Marshal(struct {
+		ConfigYAML []byte `json:"config_yaml"`
+	}{ConfigYAML: yamlDoc})
+	if _, err := handleMethod(pluginabi.MethodPluginRegister, registerRaw); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	e := activeEngine()
+	if e == nil {
+		t.Fatalf("expected an engine to be running after register")
+	}
+	e.auths = fakeAuthLister{entries: []pluginapi.HostAuthFileEntry{
+		{Name: "a.json", Provider: "antigravity"},
+		{Name: "b.json", Provider: "some-unmapped-provider"},
+	}}
+
+	callStatus := func(query url.Values, headers map[string][]string) statusPayload {
+		t.Helper()
+		req := pluginapi.ManagementRequest{
+			Method:  "GET",
+			Path:    "/v0/resource/plugins/cpa-quota-warmup/status",
+			Query:   query,
+			Headers: headers,
+		}
+		raw, _ := json.Marshal(req)
+		resp, err := handleMethod(pluginabi.MethodManagementHandle, raw)
+		if err != nil {
+			t.Fatalf("management.handle(status): %v", err)
+		}
+		var envelope struct {
+			Result struct {
+				Body []byte `json:"Body"`
+			} `json:"result"`
+		}
+		if err := json.Unmarshal(resp, &envelope); err != nil {
+			t.Fatalf("decode envelope: %v", err)
+		}
+		var payload statusPayload
+		if err := json.Unmarshal(envelope.Result.Body, &payload); err != nil {
+			t.Fatalf("decode status payload: %v", err)
+		}
+		return payload
+	}
+
+	// No query, no Accept-Language, auto config: falls back to zh-CN.
+	payload := callStatus(nil, nil)
+	if payload.Lang != string(langZhCN) {
+		t.Fatalf("Lang = %q, want zh-CN (bare fallback)", payload.Lang)
+	}
+
+	// Accept-Language alone selects Russian, and the translated Skipped
+	// reason for b.json (unmapped provider) must be the Russian text, not
+	// whatever the server happened to render in some other call.
+	payload = callStatus(nil, map[string][]string{"Accept-Language": {"ru"}})
+	if payload.Lang != string(langRU) {
+		t.Fatalf("Lang = %q, want ru (from Accept-Language)", payload.Lang)
+	}
+	var bStatus *authStatus
+	for i := range payload.Auths {
+		if payload.Auths[i].Name == "b.json" {
+			bStatus = &payload.Auths[i]
+		}
+	}
+	if bStatus == nil {
+		t.Fatalf("expected b.json in the auths list: %+v", payload.Auths)
+	}
+	if bStatus.Skipped != messagesRU[msgSkippedNoModel] {
+		t.Fatalf("Skipped = %q, want the Russian translation %q", bStatus.Skipped, messagesRU[msgSkippedNoModel])
+	}
+
+	// An explicit ?lang= wins even over Accept-Language.
+	payload = callStatus(url.Values{"lang": {"zh-TW"}}, map[string][]string{"Accept-Language": {"ru"}})
+	if payload.Lang != string(langZhTW) {
+		t.Fatalf("Lang = %q, want zh-TW (?lang= must win over Accept-Language)", payload.Lang)
+	}
+
+	// The run route reports the same "lang" field.
+	runReq := pluginapi.ManagementRequest{
+		Method: "GET",
+		Path:   "/v0/resource/plugins/cpa-quota-warmup/run",
+		Query:  url.Values{"lang": {"ru"}, "auth": {"no-such-account-*"}},
+	}
+	raw, _ := json.Marshal(runReq)
+	resp, err := handleMethod(pluginabi.MethodManagementHandle, raw)
+	if err != nil {
+		t.Fatalf("management.handle(run): %v", err)
+	}
+	var runEnvelope struct {
+		Result struct {
+			Body []byte `json:"Body"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(resp, &runEnvelope); err != nil {
+		t.Fatalf("decode run envelope: %v", err)
+	}
+	var runResult manualRunResult
+	if err := json.Unmarshal(runEnvelope.Result.Body, &runResult); err != nil {
+		t.Fatalf("decode run result: %v", err)
+	}
+	if runResult.Lang != string(langRU) {
+		t.Fatalf("run Lang = %q, want ru", runResult.Lang)
 	}
 }

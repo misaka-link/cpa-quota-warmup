@@ -107,8 +107,8 @@ func filterUnavailableModels(groups map[string][]dueTarget, available map[string
 // unavailableModelWarning is the Warning text recorded/logged for a due
 // target whose configured model the precheck found this CPA instance does
 // not currently expose.
-func unavailableModelWarning(model string) string {
-	return fmt.Sprintf("model %s not exposed by this CPA instance (see GET /v1/models)", model)
+func unavailableModelWarning(l lang, model string) string {
+	return tr(l, msgModelNotExposed, model)
 }
 
 // roundOutcome is what a warmup round loop learned about one due target.
@@ -125,7 +125,7 @@ type roundOutcome struct {
 // selector has a chance to spread them across every account, then checking
 // usage.handle coverage by AuthID after each round. Targets still uncovered
 // after maxRounds are returned with a Warning.
-func runProviderGroup(ctx context.Context, sender chatSender, ring *usageRing, message string, maxTokens, maxRounds int, targets []dueTarget) map[string]roundOutcome {
+func runProviderGroup(ctx context.Context, sender chatSender, ring *usageRing, l lang, message string, maxTokens, maxRounds int, targets []dueTarget) map[string]roundOutcome {
 	outcomes := make(map[string]roundOutcome, len(targets))
 	pending := append([]dueTarget(nil), targets...)
 	hitStatus := make(map[string]int) // AuthID -> observed status code
@@ -148,7 +148,7 @@ func runProviderGroup(ctx context.Context, sender chatSender, ring *usageRing, m
 				MaxTokens:       maxTokens,
 			})
 			if result.Err != nil {
-				hostLog("warn", fmt.Sprintf("warmup request for provider=%s model=%s failed to send: %v", t.Provider, t.Model, result.Err))
+				hostLog("warn", tr(l, msgWarmupSendFailed, t.Provider, t.Model, result.Err))
 			}
 		}
 		windowEnd := time.Now()
@@ -186,7 +186,7 @@ func runProviderGroup(ctx context.Context, sender chatSender, ring *usageRing, m
 		outcomes[t.Name] = roundOutcome{
 			Covered: false,
 			Rounds:  round,
-			Warning: fmt.Sprintf("not covered by any usage record after %d round(s)", round),
+			Warning: tr(l, msgNotCoveredAfterRounds, round),
 		}
 	}
 	return outcomes
@@ -306,6 +306,7 @@ func (e *engine) tick() {
 	if !cfg.Enabled {
 		return
 	}
+	l := logLanguage(cfg)
 	entries, err := e.auths.ListAuths()
 	e.lastTickMu.Lock()
 	e.lastTick = time.Now()
@@ -317,7 +318,7 @@ func (e *engine) tick() {
 	e.lastTickMu.Unlock()
 	if err != nil {
 		if cfg.Log {
-			hostLog("warn", fmt.Sprintf("host.auth.list failed, skipping this tick: %v", err))
+			hostLog("warn", tr(l, msgAuthListFailed, err))
 		}
 		return
 	}
@@ -327,7 +328,7 @@ func (e *engine) tick() {
 	groups, skippedNoModel := groupDueTargets(entries, cfg, now, catchUp, e.state)
 	for _, s := range skippedNoModel {
 		if cfg.Log {
-			hostLog("warn", fmt.Sprintf("auth %s has no configured model for its provider, skipping", s))
+			hostLog("warn", tr(l, msgNoModelForProvider, s))
 		}
 	}
 	if len(groups) == 0 {
@@ -336,7 +337,7 @@ func (e *engine) tick() {
 
 	apiKey, err := resolveAPIKey(cfg)
 	if err != nil {
-		hostLog("error", fmt.Sprintf("cannot resolve api-key, skipping %d due provider group(s): %v", len(groups), err))
+		hostLog("error", tr(l, msgAPIKeyResolveFailed, len(groups), err))
 		return
 	}
 	sender := e.newSender(cfg.BaseURL, apiKey)
@@ -354,21 +355,21 @@ func (e *engine) tick() {
 				Model:       t.Model,
 				TriggeredAt: t.SlotAt,
 				Covered:     false,
-				Warning:     unavailableModelWarning(t.Model),
+				Warning:     unavailableModelWarning(l, t.Model),
 			}
 			if err := e.state.record(rec, now, cfg.location); err != nil && cfg.Log {
-				hostLog("error", fmt.Sprintf("failed to persist state for auth=%s slot=%s: %v", t.Name, t.HHMM, err))
+				hostLog("error", tr(l, msgStatePersistFailed, t.Name, t.HHMM, err))
 			}
 			if cfg.Log {
-				hostLog("warn", fmt.Sprintf("auth=%s provider=%s model=%s slot=%s: %s", t.Name, t.Provider, t.Model, t.HHMM, rec.Warning))
+				hostLog("warn", tr(l, msgAuthModelUnavailable, t.Name, t.Provider, t.Model, t.HHMM, rec.Warning))
 			}
 		}
 	} else if cfg.Log {
-		hostLog("warn", fmt.Sprintf("model precheck (GET /v1/models) failed, sending warmup requests without it: %v", errModels))
+		hostLog("warn", tr(l, msgModelPrecheckFailed, errModels))
 	}
 
 	for provider, targets := range sendGroups {
-		outcomes := runProviderGroup(e.ctx, sender, e.ring, cfg.Message, cfg.MaxTokens, cfg.MaxRounds, targets)
+		outcomes := runProviderGroup(e.ctx, sender, e.ring, l, cfg.Message, cfg.MaxTokens, cfg.MaxRounds, targets)
 		for _, t := range targets {
 			outcome := outcomes[t.Name]
 			rec := slotRecord{
@@ -384,23 +385,22 @@ func (e *engine) tick() {
 				Warning:     outcome.Warning,
 			}
 			if err := e.state.record(rec, now, cfg.location); err != nil && cfg.Log {
-				hostLog("error", fmt.Sprintf("failed to persist state for auth=%s slot=%s: %v", t.Name, t.HHMM, err))
+				hostLog("error", tr(l, msgStatePersistFailed, t.Name, t.HHMM, err))
 			}
 			if cfg.Log {
 				if outcome.Covered {
-					hostLog("info", fmt.Sprintf("warmed auth=%s provider=%s model=%s slot=%s status=%d rounds=%d",
-						t.Name, provider, t.Model, t.HHMM, outcome.StatusCode, outcome.Rounds))
+					hostLog("info", tr(l, msgWarmedAccount, t.Name, provider, t.Model, t.HHMM, outcome.StatusCode, outcome.Rounds))
 				} else {
-					hostLog("warn", fmt.Sprintf("warmup did not cover auth=%s provider=%s model=%s slot=%s: %s",
-						t.Name, provider, t.Model, t.HHMM, outcome.Warning))
+					hostLog("warn", tr(l, msgWarmupDidNotCover, t.Name, provider, t.Model, t.HHMM, outcome.Warning))
 				}
 			}
 		}
 	}
 }
 
-// manualRunResult is what management.go's POST run route reports back.
+// manualRunResult is what management.go's run route reports back.
 type manualRunResult struct {
+	Lang      string                  `json:"lang"`
 	Attempted []string                `json:"attempted"`
 	Skipped   map[string]string       `json:"skipped,omitempty"`
 	Outcomes  map[string]roundOutcome `json:"outcomes,omitempty"`
@@ -411,14 +411,17 @@ type manualRunResult struct {
 // time-of-day gate but still honoring each auth's 60-second manual-trigger
 // cooldown. It does not touch the persisted schedule state: a manual run is
 // deliberately independent of whether today's real slot has already fired.
-func (e *engine) manualTrigger(ctx context.Context, authGlob string) (manualRunResult, error) {
+// l is the language already negotiated for this request (see
+// requestLanguage in i18n.go); manualTrigger has no request of its own to
+// negotiate from.
+func (e *engine) manualTrigger(ctx context.Context, authGlob string, l lang) (manualRunResult, error) {
 	cfg := e.config()
 	entries, err := e.auths.ListAuths()
 	if err != nil {
 		return manualRunResult{}, fmt.Errorf("host.auth.list: %w", err)
 	}
 
-	result := manualRunResult{Skipped: map[string]string{}, Outcomes: map[string]roundOutcome{}}
+	result := manualRunResult{Lang: string(l), Skipped: map[string]string{}, Outcomes: map[string]roundOutcome{}}
 	groups := make(map[string][]dueTarget)
 	targetByName := make(map[string]dueTarget)
 	now := time.Now()
@@ -430,16 +433,16 @@ func (e *engine) manualTrigger(ctx context.Context, authGlob string) (manualRunR
 			continue
 		}
 		if entry.Disabled || entry.Unavailable {
-			result.Skipped[name] = "disabled or unavailable"
+			result.Skipped[name] = tr(l, msgSkippedDisabled)
 			continue
 		}
 		effective, ok := resolveAuthConfig(cfg, name, entry.Provider)
 		if !ok {
-			result.Skipped[name] = "not enabled or no resolvable model"
+			result.Skipped[name] = tr(l, msgSkippedNoModel)
 			continue
 		}
 		if last, seen := e.manualLast[name]; seen && now.Sub(last) < manualTriggerCooldown {
-			result.Skipped[name] = "manual trigger cooldown (60s) not elapsed"
+			result.Skipped[name] = tr(l, msgSkippedCooldown)
 			continue
 		}
 		e.manualLast[name] = now
@@ -475,18 +478,18 @@ func (e *engine) manualTrigger(ctx context.Context, authGlob string) (manualRunR
 		var unavailable []dueTarget
 		sendGroups, unavailable = filterUnavailableModels(groups, available)
 		for _, t := range unavailable {
-			outcome := roundOutcome{Covered: false, Warning: unavailableModelWarning(t.Model)}
+			outcome := roundOutcome{Covered: false, Warning: unavailableModelWarning(l, t.Model)}
 			result.Outcomes[t.Name] = outcome
 			if cfg.Log {
-				hostLog("warn", fmt.Sprintf("auth=%s provider=%s model=%s slot=manual: %s", t.Name, t.Provider, t.Model, outcome.Warning))
+				hostLog("warn", tr(l, msgAuthModelUnavailable, t.Name, t.Provider, t.Model, "manual", outcome.Warning))
 			}
 		}
 	} else if cfg.Log {
-		hostLog("warn", fmt.Sprintf("model precheck (GET /v1/models) failed, sending warmup requests without it: %v", errModels))
+		hostLog("warn", tr(l, msgModelPrecheckFailed, errModels))
 	}
 
 	for _, targets := range sendGroups {
-		outcomes := runProviderGroup(ctx, sender, e.ring, cfg.Message, cfg.MaxTokens, cfg.MaxRounds, targets)
+		outcomes := runProviderGroup(ctx, sender, e.ring, l, cfg.Message, cfg.MaxTokens, cfg.MaxRounds, targets)
 		for name, outcome := range outcomes {
 			result.Outcomes[name] = outcome
 			if !cfg.Log {
@@ -494,11 +497,9 @@ func (e *engine) manualTrigger(ctx context.Context, authGlob string) (manualRunR
 			}
 			t := targetByName[name]
 			if outcome.Covered {
-				hostLog("info", fmt.Sprintf("warmed auth=%s provider=%s model=%s slot=manual status=%d rounds=%d",
-					name, t.Provider, t.Model, outcome.StatusCode, outcome.Rounds))
+				hostLog("info", tr(l, msgWarmedAccount, name, t.Provider, t.Model, "manual", outcome.StatusCode, outcome.Rounds))
 			} else {
-				hostLog("warn", fmt.Sprintf("warmup did not cover auth=%s provider=%s model=%s slot=manual: %s",
-					name, t.Provider, t.Model, outcome.Warning))
+				hostLog("warn", tr(l, msgWarmupDidNotCover, name, t.Provider, t.Model, "manual", outcome.Warning))
 			}
 		}
 	}

@@ -72,7 +72,7 @@ plugins:
 
 ```bash
 cd ~/cpa-plugins/cpa-quota-warmup
-scripts/build.sh                 # -> dist/cpa-quota-warmup-v0.1.1.so (+ .sha256)
+scripts/build.sh                 # -> dist/cpa-quota-warmup-v0.2.0.so (+ .sha256)
 sudo ops/merge-config.py         # 原地合并默认配置到 /var/lib/cli-proxy-api/config.yaml（保 inode）
                                   # sudo ops/merge-config.py --remove 可移除
 sudo ops/deploy                  # 安装 .so 到插件目录并重启 cli-proxy-api.service
@@ -87,18 +87,21 @@ sudo ops/deploy                  # 安装 .so 到插件目录并重启 cli-proxy
 go vet ./... && go test ./...
 
 # 2. 真 ABI 集成测试（不需要真实宿主/网络）
-python3 integration_abi_test.py dist/cpa-quota-warmup-v0.1.1.so
+python3 integration_abi_test.py dist/cpa-quota-warmup-v0.2.0.so
 
 # 3. 部署后看宿主日志（host.log 回调，前缀 [cpa-quota-warmup]）
 journalctl -u cli-proxy-api | rg 'cpa-quota-warmup'
 
-# 4. 管理面板状态路由（免鉴权）——各账号计划时间、下次触发、最近结果
-curl -s http://127.0.0.1:8317/v0/resource/plugins/cpa-quota-warmup/status | jq .
+# 4. 状态页面（HTML，免鉴权，管理中心菜单里也能进），跟随管理中心的语言与主题
+open http://127.0.0.1:8317/v0/resource/plugins/cpa-quota-warmup/panel
 
-# 5. 立即手动触发一轮（GET，见下方"宿主事实核实"里为什么不是 POST）
+# 5. 状态 JSON（页面本身用的数据源；?lang= 可强制语言，不传则按 Accept-Language/LANG 协商）
+curl -s 'http://127.0.0.1:8317/v0/resource/plugins/cpa-quota-warmup/status?lang=ru' | jq .
+
+# 6. 立即手动触发一轮（GET，见下方"宿主事实核实"里为什么不是 POST）
 curl -s 'http://127.0.0.1:8317/v0/resource/plugins/cpa-quota-warmup/run?auth=antigravity-*' | jq .
 
-# 6. cpa-usage-panel 里应该能看到这些请求（provider=对应 provider，model=配置的模型，
+# 7. cpa-usage-panel 里应该能看到这些请求（provider=对应 provider，model=配置的模型，
 #    时间落在计划的 HH:MM 附近），确认预热请求确实打到了上游而不是本地短路
 ```
 
@@ -111,6 +114,20 @@ curl -s 'http://127.0.0.1:8317/v0/resource/plugins/cpa-quota-warmup/run?auth=ant
 3. **`host.model.execute` 确实不产生 usage 记录**，与任务给出的判断一致（`sdk/api/handlers/handlers_execution.go:205`，`InternalSource=true` 时跳过 usage 上报），已按此确认改用普通 HTTP 客户端。
 4. **`POST /v1/chat/completions` 的路径、`max_tokens`、`reasoning_effort` 字段均按任务描述核实无误。** `internal/api/server_routes.go:66` 注册路由；`sdk/api/handlers/openai/openai_handlers.go:211-212` 显式读取并转发 `max_tokens`；`reasoning_effort` 由通用的 `internal/thinking/apply.go` 的 `extractOpenAIConfig` 解析（"OpenAI Chat Completions format" 的合法输入，`none/low/medium/high` 离散档位），不是本插件凭空加的字段，会被正常应用到匹配的模型/provider 上。实际是否被下游 codex 执行器采纳成 upstream 请求未做端到端验证（没有真实 codex 账号可测）。
 5. **模型名的 provider 前缀语法（`provider/model` 或 `provider:model`）在 `/v1/chat/completions` 这条路径上不存在。** `ForcedProvider`（`sdk/api/handlers/model_execution.go`）只能通过插件内部的 `ProtocolExecutionRequest`/Gemini Interactions 的 `agent` 参数设置，普通客户端请求体的 `model` 字段没有任何解析出 provider 前缀的逻辑（`sdk/api/handlers/handlers_routing.go` 的 `providersForExecution` 只在 `execOptions.ForcedProvider` 已经非空时才用它，而这个值不会从请求体里派生）。因此本插件严格依赖"每个 provider 配置一个在该 provider 唯一存在的模型名"这一假设，与任务描述的兜底方案一致，未发现更好的替代方案。
+6. **`pluginapi.ManagementRequest` 确实带 `Query`（`url.Values`）与 `Headers`（`http.Header`）字段**，且 `internal/pluginhost/management.go` 的 `ServeResourceHTTP` 在构造它时会把真实请求的 query string 和请求头原样克隆进去（`cloneHeader(r.Header)` / `cloneValues(r.URL.Query())`）。所以 `status`/`run`/`panel` 三个路由都能直接读到 `?lang=` 和 `Accept-Language`，不需要"只能退化到路径/查询串"那种更弱的方案。
+7. **`cli-proxy-language` 的实际存储格式**：对照一份真实的 `/var/lib/cli-proxy-api/static/management.html` 构建反查得到的函数（对应变量名 `ll`/`ul`/`dl`/`cl`/`sl`/`ol`），确认它是 zustand `persist` 中间件写的，取值可能是 `{"state":{"language":"zh-CN"},...}` 这种信封、也可能是裸 JSON 字符串 `"zh-CN"`、极端情况下甚至是完全不带引号的裸字符串——三种都要兼容解析（本插件页面里的 `parseStored()` 照此实现）；`navigator.language` 兜底规则是 `zh-tw`/`zh-hk`/`zh-mo`/`zh-hant` 前缀 → `zh-TW`，`zh*` → `zh-CN`，`ru*` → `ru`，其余 → `en`，与任务描述完全一致，已按真实源码核实（不是假设）。
+
+## 国际化（i18n）
+
+插件跟随 CPA 管理中心（Management Center）的语言，覆盖 host.log 全部文本、`status`/`run` JSON 里的人类可读字段（`Skipped` 原因、`Warning`）、以及状态页面本身，支持 `zh-CN`（简体）、`zh-TW`（繁体）、`en`、`ru` 四种，与管理中心 i18next 支持的语言完全一致（`Vc="cli-proxy-language"`、`Hc=["zh-CN","zh-TW","en","ru"]`，对照真实 `management.html` 构建核实）。
+
+- **消息目录**：`i18n.go` 里 `messagesEN/messagesZhCN/messagesZhTW/messagesRU` 四张表，key 用 `msgKey` 常量化；`tr(lang, key, args...)` 查表格式化，缺失语言/缺失 key 都回退英文，实在没有则回退裸 key 字符串（不会 panic）。四张表的 key 集合一致性有单测保证（`TestMessageCatalogsHaveTheSameKeys`）。ru 是认真写的技术俄语，不是机翻占位（含一处刻意简化：轮次计数的复数变格统一用 "раундов"，不做俄语 one/few/many 全套规则）。
+- **服务端语言选择**：配置新增 `language: "auto" | "zh-CN" | "zh-TW" | "en" | "ru"`（默认 `auto`）。
+  - `status`/`run`（有请求上下文）优先级：`?lang=` 查询参数 > `language` 配置（非 `auto` 时）> `Accept-Language` 头（取权重最高的一个 tag）> 环境变量 `LC_ALL`/`LANG`（`zh_CN.UTF-8` → `zh-CN`，`C`/`POSIX`/裸 `C.UTF-8` 视为未设置）> 兜底 `zh-CN`。**`?lang=` 优先级高于 `language` 配置是本插件自己的取舍**：任务原文只给出了 "auto 规则" 的链条，没说清楚 pin 死的 `language` 配置与单次请求的 `?lang=` 谁优先；这里选择让 `?lang=` 总是赢，因为状态页面自己每次都会带着访客浏览器实际检测到的语言发 `?lang=`，如果配置更优先，管理员一旦全局 pin 了语言，页面就没法再跟着访客自己的语言走了。
+  - `host.log`（没有请求上下文）：`language` 配置（非 `auto` 时）> `LC_ALL`/`LANG` > 兜底 `zh-CN`。
+  - `status`/`run` 的 JSON 响应都带 `"lang"` 字段说明实际用的是哪种。
+- **状态页面**：`GET /v0/resource/plugins/cpa-quota-warmup/panel`（管理中心菜单会显示"配额预热 / Quota Warmup"），自包含 HTML（内联 CSS/JS，无外链），登记簿/表格风格（配置摘要用两列表格，账号列表与最近记录都是纯表格，没有卡片套卡片、没有渐变、没有 emoji），字体用系统字体栈，深浅色主题都跟随管理中心的 `cli-proxy-theme`（做法照抄 `cpa-usage-panel/panel.html`）。页面 JS 读 `localStorage['cli-proxy-language']`（同样支持 zustand-persist 的 JSON 信封或裸字符串两种存法），缺失时按 `navigator.language`（`zh-tw`/`zh-hk`/`zh-mo`/`zh-hant` 前缀 → `zh-TW`，`zh*` → `zh-CN`，`ru*` → `ru`，其余 → `en`）——这套判定逻辑对照真实 `management.html` 构建里的 `ol/sl/cl/ll/ul/dl` 几个函数核实过，不是拍脑袋写的。页面自己的文案（标题、表头、按钮等）复用 Go 端同一份消息目录，整份序列化成 JSON 注入页面（`window` 里一个 `<script type="application/json">`），不维护第二份翻译。
+- `?auth=<glob>` 的"立即预热"按钮直接调 `/run`，结果就地渲染在按钮下方，不跳转页面。
 
 ## 已知限制
 
@@ -118,6 +135,8 @@ curl -s 'http://127.0.0.1:8317/v0/resource/plugins/cpa-quota-warmup/run?auth=ant
 - `run` 只能是 GET（见上）。
 - 手动触发（`run`）不写入按时间点的 `state.json`（不影响当天定时槽位的判定），只受每账号 60 秒节流保护，避免连点。
 - 模型预检只确认 `GET /v1/models` 列出了这个名字，不代表这个模型这个账号一定能用（例如账号自身权限/额度问题仍可能在实际发送时报错）；预检本身失败（网络问题等）会被当作"跳过预检，照常发送"处理，不会阻塞正常预热。
+- 状态页面首次渲染用服务端猜的语言（`?lang=`/`Accept-Language`/`LANG` 那条链，没有访问 localStorage 的能力），JS 加载后立即按 `cli-proxy-language`/`navigator.language` 校正；两者通常一致（浏览器语言与 `Accept-Language` 头本来就同源），但理论上 JS 执行前有极短暂的窗口可能显示了另一种语言的静态文案。
+- `language` 配置项写了非法值（既不是 `auto` 也不是四种语言之一）会静默回退成 `auto`，不会让 `plugin.register`/`reconfigure` 失败；没有额外的 `warn` 日志（这一点与其他配置校验不完全一致，属于本次改动里对"不要因为一个拼写错误就整个不生效"的取舍）。
 
 ## v0.1.1（线上手动触发实测后的修复）
 
@@ -125,3 +144,12 @@ curl -s 'http://127.0.0.1:8317/v0/resource/plugins/cpa-quota-warmup/run?auth=ant
 2. **默认模型名改成本机 `GET /v1/models` 实际暴露的那些**（antigravity `gemini-3.7-flash-high`、kimi `kimi-k2.8`、xai `grok-4.6`；codex/claude/gemini-cli/aistudio/vertex 不变），避免像 `gemini-3.1-flash-lite` 那样直接 404。
 3. **加了模型预检**（见"机制"第 3 步）：配置漂移（模型改名/下线）时只会跳过并 warn，不会对着一个不存在的模型反复发请求。
 4. `run` 手动触发现在也会像后台 tick 一样，给每个账号打一行 `host.log`（含预检跳过的情况），方便对着 journal 排查。
+
+## v0.2.0（i18n：跟随 CPA 语言）
+
+1. 新增消息目录 `i18n.go`（`zh-CN`/`zh-TW`/`en`/`ru`），覆盖所有 `hostLog` 文本、`roundOutcome.Warning`、`manualRunResult.Skipped` 的原因、`status`/`run` JSON 里的人类可读字段；`status`/`run` 响应新增 `"lang"` 字段。
+2. 新增配置项 `language`（默认 `auto`），语言协商规则见上面"国际化（i18n）"一节。
+3. 新增状态页面 `GET /v0/resource/plugins/cpa-quota-warmup/panel`（自包含 HTML，登记簿/表格风格，跟随管理中心主题与语言），管理中心菜单条目挪到这个页面上（`status`/`run` 不再带菜单标签，纯数据/动作端点）。
+4. `ConfigFields` 的 `Description` 从纯英文改成"中文 / English"双语一句话（注册时是静态字符串，无法跟随访客浏览器语言）。
+5. **实现过程中用真实单元测试挖出一个真 bug并修复**：本机 `LANG=C.UTF-8`，`languageFromEnv` 最初把编码后缀（`.UTF-8`）剥离的顺序放在了"是不是 `C`/`POSIX`"判断之后，导致 `C.UTF-8` 被误判成英语而不是"未设置"。已把剥离顺序调整到判断之前，并补了 `TestLanguageFromEnv` 里 `C.UTF-8`/`POSIX.UTF-8` 两个用例锁定这个修复。
+6. 单元测试新增：语言协商全链路（query/Accept-Language/LANG/兜底，含优先级）、`tr()` 缺失语言/缺失 key 回退、四语言消息表 key 集合一致性、`status`/`run` 响应的 `lang` 字段与 `?lang=` 覆盖、`language` 配置项的规范化、面板 HTML 渲染（无残留占位符、各语言标题正确、未知语言回退英文）。ABI 集成测试新增：`management.register` 现在有 3 个资源路由（`panel`/`status`/`run`，只有 `panel` 带菜单）、`GET .../panel` 返回 `text/html` 且包含 `cli-proxy-language`/`cli-proxy-theme`、`status`/`run` 的 `?lang=` 生效。

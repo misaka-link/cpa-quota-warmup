@@ -11,8 +11,9 @@ import (
 )
 
 const (
-	contentTypeJSON    = "application/json; charset=utf-8"
-	resourceStatusPath = "/status"
+	contentTypeJSON = "application/json; charset=utf-8"
+	contentTypeHTML = "text/html; charset=utf-8"
+	langQueryKey    = "lang"
 	// resourceRunPath is only reachable over GET: CPA's resource route
 	// dispatcher (internal/pluginhost's ServeResourceHTTP, verified against
 	// v7.2.158) hard-codes `if !strings.EqualFold(r.Method, http.MethodGet)
@@ -22,23 +23,33 @@ const (
 	// POST. Since this endpoint is meant to be unauthenticated like status,
 	// it is exposed as GET with the auth filter in the query string instead
 	// of as a POST body.
-	resourceRunPath  = "/run"
-	runQueryAuthKey  = "auth"
-	runRequestBudget = 4 * time.Minute
+	resourceRunPath    = "/run"
+	resourceStatusPath = "/status"
+	resourcePanelPath  = "/panel"
+	runQueryAuthKey    = "auth"
+	runRequestBudget   = 4 * time.Minute
 )
 
 func managementRegistration() pluginapi.ManagementRegistrationResponse {
 	return pluginapi.ManagementRegistrationResponse{
 		Resources: []pluginapi.ResourceRoute{
 			{
+				// The visible page: menu label lives here, not on the JSON
+				// feed below, matching every other plugin panel in this
+				// deployment (cpa-usage-panel, cpa-context-vm).
+				Path:        resourcePanelPath,
+				Menu:        "配额预热 / Quota Warmup",
+				Description: "每账号预热计划、下次触发时间与最近结果 / Per-account warmup schedule, next trigger times, and recent results.",
+			},
+			{
+				// No menu label: this is the page's own JSON data feed.
 				Path:        resourceStatusPath,
-				Menu:        "Quota Warmup",
-				Description: "Per-auth warmup schedule, next trigger times, and recent results.",
+				Description: "配额预热状态 JSON（供页面与脚本使用）/ Quota warmup status as JSON (for the panel page and scripts).",
 			},
 			{
 				// No menu label: this is an action endpoint, not a page.
 				Path:        resourceRunPath,
-				Description: "Trigger an immediate out-of-schedule warmup round (GET only; optional ?auth=<glob> narrows which auth files run).",
+				Description: "立即触发一轮预热（仅 GET；可选 ?auth=<glob>）/ Trigger an immediate out-of-schedule warmup round (GET only; optional ?auth=<glob>).",
 			},
 		},
 	}
@@ -53,10 +64,16 @@ func handleManagementRequest(raw []byte) ([]byte, error) {
 	}
 	trimmed := strings.TrimRight(req.Path, "/")
 	var resp pluginapi.ManagementResponse
-	if strings.HasSuffix(trimmed, resourceRunPath) {
+	switch {
+	case strings.HasSuffix(trimmed, resourceRunPath):
 		resp = handleRunRequest(req)
-	} else {
-		resp = handleStatusRequest()
+	case strings.HasSuffix(trimmed, resourceStatusPath):
+		resp = handleStatusRequest(req)
+	default:
+		// Includes resourcePanelPath and any unrecognized suffix (e.g. the
+		// plugin's bare resource root, which CPA never routes here anyway
+		// since ResourceRoute.Path cannot be empty -- see panel.go).
+		resp = handlePanelRequest(req)
 	}
 	return okEnvelope(resp)
 }
@@ -80,6 +97,26 @@ func jsonManagementResponse(status int, payload any) pluginapi.ManagementRespons
 	}
 }
 
+// requestLang resolves the language for one request given whatever engine
+// config is available (nil when the engine is not running -- e.g. the
+// service just started or was just shut down -- in which case only the
+// request's own query/header/env signals are used, as if language: "auto").
+func requestLang(cfg *pluginConfig, req pluginapi.ManagementRequest) lang {
+	effective := pluginConfig{Language: "auto"}
+	if cfg != nil {
+		effective = *cfg
+	}
+	var acceptLanguage string
+	if req.Headers != nil {
+		acceptLanguage = req.Headers.Get("Accept-Language")
+	}
+	var queryLang string
+	if req.Query != nil {
+		queryLang = req.Query.Get(langQueryKey)
+	}
+	return requestLanguage(effective, queryLang, acceptLanguage)
+}
+
 type configSummary struct {
 	Enabled        bool   `json:"enabled"`
 	Timezone       string `json:"timezone"`
@@ -88,6 +125,7 @@ type configSummary struct {
 	MaxTokens      int    `json:"max_tokens"`
 	MaxRounds      int    `json:"max_rounds"`
 	CatchUpMinutes int    `json:"catch_up_minutes"`
+	Language       string `json:"language"`
 }
 
 type authStatus struct {
@@ -101,6 +139,7 @@ type authStatus struct {
 }
 
 type statusPayload struct {
+	Lang          string        `json:"lang"`
 	Config        configSummary `json:"config"`
 	Auths         []authStatus  `json:"auths,omitempty"`
 	AuthsError    string        `json:"auths_error,omitempty"`
@@ -109,13 +148,16 @@ type statusPayload struct {
 	LastTickError string        `json:"last_tick_error,omitempty"`
 }
 
-func handleStatusRequest() pluginapi.ManagementResponse {
+func handleStatusRequest(req pluginapi.ManagementRequest) pluginapi.ManagementResponse {
 	e := activeEngine()
 	if e == nil {
-		return jsonManagementResponse(http.StatusServiceUnavailable, map[string]string{"error": "engine not running"})
+		l := requestLang(nil, req)
+		return jsonManagementResponse(http.StatusServiceUnavailable, map[string]string{"error": tr(l, msgEngineNotRunning), "lang": string(l)})
 	}
 	cfg := e.config()
+	l := requestLang(&cfg, req)
 	payload := statusPayload{
+		Lang: string(l),
 		Config: configSummary{
 			Enabled:        cfg.Enabled,
 			Timezone:       cfg.Timezone,
@@ -124,6 +166,7 @@ func handleStatusRequest() pluginapi.ManagementResponse {
 			MaxTokens:      cfg.MaxTokens,
 			MaxRounds:      cfg.MaxRounds,
 			CatchUpMinutes: cfg.CatchUpMinutes,
+			Language:       cfg.Language,
 		},
 		Recent: e.state.snapshot(),
 	}
@@ -151,7 +194,7 @@ func handleStatusRequest() pluginapi.ManagementResponse {
 		as := authStatus{Name: name, Provider: entry.Provider}
 		switch {
 		case entry.Disabled || entry.Unavailable:
-			as.Skipped = "disabled or unavailable"
+			as.Skipped = tr(l, msgSkippedDisabled)
 		default:
 			if effective, ok := resolveAuthConfig(cfg, name, entry.Provider); ok {
 				as.Enabled = true
@@ -161,7 +204,7 @@ func handleStatusRequest() pluginapi.ManagementResponse {
 					as.NextTrigger = next.Format(time.RFC3339)
 				}
 			} else {
-				as.Skipped = "not enabled or no resolvable model for its provider"
+				as.Skipped = tr(l, msgSkippedNoModel)
 			}
 		}
 		payload.Auths = append(payload.Auths, as)
@@ -199,17 +242,20 @@ func nextTriggerFor(times []string, now time.Time, loc *time.Location, catchUp t
 func handleRunRequest(req pluginapi.ManagementRequest) pluginapi.ManagementResponse {
 	e := activeEngine()
 	if e == nil {
-		return jsonManagementResponse(http.StatusServiceUnavailable, map[string]string{"error": "engine not running"})
+		l := requestLang(nil, req)
+		return jsonManagementResponse(http.StatusServiceUnavailable, map[string]string{"error": tr(l, msgEngineNotRunning), "lang": string(l)})
 	}
+	cfg := e.config()
+	l := requestLang(&cfg, req)
 	glob := ""
 	if req.Query != nil {
 		glob = req.Query.Get(runQueryAuthKey)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), runRequestBudget)
 	defer cancel()
-	result, err := e.manualTrigger(ctx, glob)
+	result, err := e.manualTrigger(ctx, glob, l)
 	if err != nil {
-		return jsonManagementResponse(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return jsonManagementResponse(http.StatusInternalServerError, map[string]string{"error": tr(l, msgRunFailed, err.Error()), "lang": string(l)})
 	}
 	return jsonManagementResponse(http.StatusOK, result)
 }

@@ -170,7 +170,7 @@ func TestRunProviderGroupCoversEveryoneInOneRound(t *testing.T) {
 		return targets[idx].AuthID, 200, true
 	}}
 
-	outcomes := runProviderGroup(context.Background(), sender, ring, "hi", 16, 3, targets)
+	outcomes := runProviderGroup(context.Background(), sender, ring, langEN, "hi", 16, 3, targets)
 	for _, name := range []string{"a", "b", "c"} {
 		o, ok := outcomes[name]
 		if !ok || !o.Covered || o.Rounds != 1 || o.StatusCode != 200 {
@@ -200,7 +200,7 @@ func TestRunProviderGroupRetriesUncoveredAccountsNextRound(t *testing.T) {
 		}
 	}}
 
-	outcomes := runProviderGroup(context.Background(), sender, ring, "hi", 16, 3, targets)
+	outcomes := runProviderGroup(context.Background(), sender, ring, langEN, "hi", 16, 3, targets)
 	if o := outcomes["a"]; !o.Covered || o.Rounds != 1 {
 		t.Fatalf("outcome[a] = %+v, want covered round 1", o)
 	}
@@ -249,7 +249,7 @@ func TestRunProviderGroupCoversBothAccountsFromASingleRetriedRequest(t *testing.
 		return "auth-shao", 200, true
 	}}
 
-	outcomes := runProviderGroup(context.Background(), sender, ring, "hi", 16, 3, targets)
+	outcomes := runProviderGroup(context.Background(), sender, ring, langEN, "hi", 16, 3, targets)
 	if o := outcomes["szxypy"]; !o.Covered || o.StatusCode != 429 || o.Rounds != 1 {
 		t.Fatalf("outcome[szxypy] = %+v, want covered in round 1 with the 429 status recorded", o)
 	}
@@ -269,7 +269,7 @@ func TestRunProviderGroupWarnsAfterMaxRounds(t *testing.T) {
 		return "auth-a", 200, true
 	}}
 
-	outcomes := runProviderGroup(context.Background(), sender, ring, "hi", 16, 3, targets)
+	outcomes := runProviderGroup(context.Background(), sender, ring, langEN, "hi", 16, 3, targets)
 	if o := outcomes["a"]; !o.Covered || o.Rounds != 1 {
 		t.Fatalf("outcome[a] = %+v, want covered round 1", o)
 	}
@@ -301,7 +301,7 @@ func TestRunProviderGroupFallsBackToWindowMatchWithoutSessionTag(t *testing.T) {
 		return "", 0, false // do not also record via the normal tagged path
 	}}
 
-	outcomes := runProviderGroup(context.Background(), sender, ring, "hi", 16, 3, targets)
+	outcomes := runProviderGroup(context.Background(), sender, ring, langEN, "hi", 16, 3, targets)
 	for _, name := range []string{"a", "b"} {
 		o, ok := outcomes[name]
 		if !ok || !o.Covered {

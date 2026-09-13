@@ -94,7 +94,7 @@ BASE_CONFIG = """
 timezone: "UTC"
 message: "hi"
 providers:
-  antigravity: { model: "gemini-3.1-flash-lite" }
+  antigravity: { model: "gemini-3.7-flash-high" }
 """
 
 
@@ -137,15 +137,33 @@ def main() -> None:
         )
         resources = mgmt_routes["Resources"]
         paths = [item["Path"] for item in resources]
-        if paths != ["/status", "/run"]:
+        if paths != ["/panel", "/status", "/run"]:
             raise AssertionError(f"unexpected resource paths: {paths}")
-        if not resources[0]["Menu"] or resources[1].get("Menu"):
-            raise AssertionError("only the status route may carry a menu label")
+        if not resources[0]["Menu"] or resources[1].get("Menu") or resources[2].get("Menu"):
+            raise AssertionError("only the panel route may carry a menu label")
+
+        # The panel page must render as a self-contained HTML document that
+        # follows the Management Center's own language (and theme) choice.
+        panel_status, panel_headers, panel_body = decode_management(
+            invoke(
+                plugin,
+                "management.handle",
+                management_request(f"/v0/resource/plugins/{plugin_id}/panel"),
+            )
+        )
+        if panel_status != 200 or "text/html" not in panel_headers.get("content-type", ""):
+            raise AssertionError(f"panel response: status={panel_status}, headers={panel_headers}")
+        if b"cli-proxy-language" not in panel_body:
+            raise AssertionError("panel HTML does not read the cli-proxy-language localStorage key")
+        if b"cli-proxy-theme" not in panel_body:
+            raise AssertionError("panel HTML does not follow the cli-proxy-theme localStorage key")
+        if b"{{" in panel_body:
+            raise AssertionError("panel HTML has an unreplaced {{...}} template placeholder")
 
         # usage.handle must never error, even for an arbitrary/unrelated record.
         usage_record = {
             "Provider": "antigravity",
-            "Model": "gemini-3.1-flash-lite",
+            "Model": "gemini-3.7-flash-high",
             "SessionID": "header:cpa-quota-warmup-deadbeef",
             "AuthID": "auth-1",
             "RequestedAt": "2026-09-13T05:30:00Z",
@@ -158,7 +176,7 @@ def main() -> None:
             invoke(
                 plugin,
                 "management.handle",
-                management_request(f"/v0/resource/plugins/{plugin_id}/status"),
+                management_request(f"/v0/resource/plugins/{plugin_id}/status", {"lang": "ru"}),
             )
         )
         if status != 200 or "application/json" not in headers.get("content-type", ""):
@@ -166,6 +184,8 @@ def main() -> None:
         payload = json.loads(body)
         if payload["config"]["message"] != "hi":
             raise AssertionError(f"unexpected config summary: {payload['config']}")
+        if payload.get("lang") != "ru":
+            raise AssertionError(f"expected ?lang=ru to be honored, got lang={payload.get('lang')!r}")
         if not payload.get("auths_error"):
             # host.auth.list has no real host behind it in this test, so the
             # status route is expected to surface that as auths_error rather
@@ -179,11 +199,14 @@ def main() -> None:
             invoke(
                 plugin,
                 "management.handle",
-                management_request(f"/v0/resource/plugins/{plugin_id}/run", {"auth": "*"}),
+                management_request(f"/v0/resource/plugins/{plugin_id}/run", {"auth": "*", "lang": "zh-TW"}),
             )
         )
         if run_status != 500 or b"error" not in run_body:
             raise AssertionError(f"run response: status={run_status}, body={run_body!r}")
+        run_payload = json.loads(run_body)
+        if run_payload.get("lang") != "zh-TW":
+            raise AssertionError(f"expected ?lang=zh-TW to be honored on /run, got {run_payload}")
 
         # plugin.reconfigure must hot-swap the config without erroring, and
         # the change must be visible through the status route immediately.

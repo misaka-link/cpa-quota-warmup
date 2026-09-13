@@ -20,6 +20,7 @@ const (
 	defaultMaxRounds      = 3
 	defaultCatchUpMinutes = 60
 	defaultTime           = "05:30"
+	defaultLanguage       = "auto"
 	hostConfigFileName    = "config.yaml"
 )
 
@@ -51,19 +52,25 @@ type authOverride struct {
 
 // pluginConfig is the decoded `plugins.configs.cpa-quota-warmup` block.
 type pluginConfig struct {
-	Enabled        bool                       `yaml:"enabled"`
-	Priority       int                        `yaml:"priority"`
-	Log            bool                       `yaml:"log"`
-	Timezone       string                     `yaml:"timezone"`
-	BaseURL        string                     `yaml:"base-url"`
-	APIKey         string                     `yaml:"api-key"`
-	Message        string                     `yaml:"message"`
-	MaxTokens      int                        `yaml:"max-tokens"`
-	MaxRounds      int                        `yaml:"max-rounds"`
-	CatchUpMinutes int                        `yaml:"catch-up-minutes"`
-	Default        defaultSchedule            `yaml:"default"`
-	Providers      map[string]providerDefault `yaml:"providers"`
-	Auths          []authOverride             `yaml:"auths"`
+	Enabled        bool   `yaml:"enabled"`
+	Priority       int    `yaml:"priority"`
+	Log            bool   `yaml:"log"`
+	Timezone       string `yaml:"timezone"`
+	BaseURL        string `yaml:"base-url"`
+	APIKey         string `yaml:"api-key"`
+	Message        string `yaml:"message"`
+	MaxTokens      int    `yaml:"max-tokens"`
+	MaxRounds      int    `yaml:"max-rounds"`
+	CatchUpMinutes int    `yaml:"catch-up-minutes"`
+	// Language selects the language for host.log lines, the status/run JSON
+	// (a translated Skipped/Warning value plus a "lang" field saying which
+	// language was used), and the default the panel page's own ?lang= query
+	// falls back to. "auto" (the default) negotiates per call; see
+	// requestLanguage/logLanguage in i18n.go.
+	Language  string                     `yaml:"language"`
+	Default   defaultSchedule            `yaml:"default"`
+	Providers map[string]providerDefault `yaml:"providers"`
+	Auths     []authOverride             `yaml:"auths"`
 
 	// location is resolved from Timezone at decode time; nil is never
 	// returned to callers (decodeConfig fails first).
@@ -81,6 +88,7 @@ func defaultPluginConfig() pluginConfig {
 		MaxTokens:      defaultMaxTokens,
 		MaxRounds:      defaultMaxRounds,
 		CatchUpMinutes: defaultCatchUpMinutes,
+		Language:       defaultLanguage,
 		Default: defaultSchedule{
 			Times: []string{defaultTime},
 		},
@@ -126,6 +134,7 @@ func decodeConfig(raw []byte) (pluginConfig, error) {
 	if len(cfg.Default.Times) == 0 {
 		cfg.Default.Times = []string{defaultTime}
 	}
+	cfg.Language = normalizeLanguageSetting(cfg.Language)
 
 	loc, err := resolveLocation(cfg.Timezone)
 	if err != nil {
@@ -135,6 +144,22 @@ func decodeConfig(raw []byte) (pluginConfig, error) {
 	cfg.Timezone = loc.String()
 
 	return cfg, nil
+}
+
+// normalizeLanguageSetting validates the `language:` config value against
+// "auto" and the four supported language codes (case-insensitively),
+// returning its canonical form. An empty or unrecognized value quietly
+// becomes "auto" rather than failing the whole plugin.register/reconfigure
+// call over a typo in one optional field.
+func normalizeLanguageSetting(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || strings.EqualFold(raw, "auto") {
+		return "auto"
+	}
+	if l, ok := normalizeLangTag(raw); ok {
+		return string(l)
+	}
+	return "auto"
 }
 
 func resolveLocation(name string) (*time.Location, error) {
