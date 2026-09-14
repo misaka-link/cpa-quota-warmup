@@ -6,9 +6,26 @@
 
 ### Install
 
-- **From a release**: download `cpa-quota-warmup-v<ver>.so` from this repository's [Releases](https://github.com/szxypi/cpa-quota-warmup/releases) page and place it under `<plugins.dir>/linux/amd64/` in your CPA installation (CPA derives the plugin id from the file name itself, not from any metadata field). Add a `plugins.configs.cpa-quota-warmup` block to CPA's `config.yaml` (minimal example below), then restart CPA.
-- **From source**: `CGO_ENABLED=1 scripts/build.sh` (requires Go 1.26+). This plugin is built against `github.com/router-for-me/CLIProxyAPI/v7` SDK `v7.2.158` (see `go.mod`) and targets the CPA `7.2.15x` host line.
+**Option A — CPA plugin store (recommended).** In the management console open 插件商店 → install from GitHub repository `szxypi/cpa-quota-warmup`. Every release ships store-compatible assets: `cpa-quota-warmup_<ver>_linux_amd64.zip`, `cpa-quota-warmup_<ver>_linux_arm64.zip` and `checksums.txt` (the zip contains `cpa-quota-warmup.so` at its root, which is exactly the layout `internal/pluginstore` expects).
+
+> If the store fails with `unexpected status 403 ... API rate limit exceeded`, that is GitHub's anonymous API limit (60 requests/hour per IP) being hit while the store refreshes *every* plugin in the registry — not a problem with this plugin. Fix it once by giving CPA a GitHub token (any classic token, no scopes needed):
+>
+> ```yaml
+> plugins:
+>   store-auth:
+>     - match: "https://api.github.com/"
+>       apply-to: ["registry", "artifact"]
+>       type: bearer
+>       token-env: "CLIPROXY_PLUGIN_STORE_TOKEN"
+> ```
+> and export `CLIPROXY_PLUGIN_STORE_TOKEN=ghp_...` in CPA's environment (e.g. `Environment=` in the systemd unit, or `environment:` in docker-compose), then restart CPA.
+
+**Option B — manual.** Download `cpa-quota-warmup-v<ver>-linux-<arch>.so` from [Releases](https://github.com/szxypi/cpa-quota-warmup/releases), rename it to `cpa-quota-warmup-v<ver>.so` and place it under `<plugins.dir>/linux/<arch>/` (CPA derives the plugin id from the file name). Add `plugins.configs.cpa-quota-warmup: { enabled: true }` to `config.yaml` and restart CPA.
+
+Binaries are built against glibc 2.34 (same baseline as the official plugins built on ubuntu-24.04); Debian 12 / Ubuntu 22.04+ / the official Docker image work out of the box. On older distros (glibc < 2.34) build from source: `CGO_ENABLED=1 scripts/build.sh` (Go 1.26+).
+
 - `ops/deploy` and `ops/merge-config.py` are convenience scripts written for the maintainer's own local systemd deployment (they assume a `cli-proxy-api.service` and `/var/lib/cli-proxy-api/...` paths); treat them as examples and adjust the paths for your own setup, or configure/install by hand instead.
+- `scripts/package-release.sh` produces the store-compatible zips + `checksums.txt` for both linux/amd64 and linux/arm64 (needs `gcc-aarch64-linux-gnu` for the arm64 cross build).
 
 Two-step quick start (v0.4.0+):
 
