@@ -38,7 +38,7 @@ func managementRegistration() pluginapi.ManagementRegistrationResponse {
 				// feed below, matching every other plugin panel in this
 				// deployment (cpa-usage-panel, cpa-context-vm).
 				Path:        resourcePanelPath,
-				Menu:        "配额预热 / Quota Warmup",
+				Menu:        "配额预热",
 				Description: "每账号预热计划、下次触发时间与最近结果 / Per-account warmup schedule, next trigger times, and recent results.",
 			},
 			{

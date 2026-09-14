@@ -11,7 +11,7 @@ import (
 
 const (
 	pluginName    = "cpa-quota-warmup"
-	pluginVersion = "0.2.1"
+	pluginVersion = "0.2.2"
 	logPrefix     = "[cpa-quota-warmup] "
 )
 
