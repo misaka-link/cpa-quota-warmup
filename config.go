@@ -84,12 +84,29 @@ type pluginConfig struct {
 	Accounts accountOverrideList `yaml:"accounts"`
 	Advanced advancedConfig      `yaml:"advanced"`
 
+	// ConfigFilePath is v0.4.0's `config-file:` key: an optional override
+	// for where the externally maintained per-account YAML file lives
+	// (default <cwd>/quota-warmup.yaml). Only meaningful in file mode (see
+	// below) -- legacy/v3InlineMode configs carry their schedule inline and
+	// never read this.
+	ConfigFilePath string `yaml:"config-file"`
+
 	// legacyMode is true when decodeConfig detected at least one legacy-only
 	// top-level key (default/providers/auths/timezone/base-url/api-key/
-	// message/max-tokens/max-rounds/catch-up-minutes). It selects which of
-	// the two schedule/model resolution code paths (resolveAuthConfig vs
-	// resolveNewAuth) runner.go and management.go use.
+	// message/max-tokens/max-rounds/catch-up-minutes) -- the pre-v0.3.0
+	// shape. It selects resolveAuthConfig's resolution path.
 	legacyMode bool
+	// v3InlineMode is true when decodeConfig detected the v0.3.0 top-level
+	// time/model/accounts keys (and legacyMode is false). It selects
+	// resolveNewAuth's resolution path with cfg.Accounts/TimeRaw/Model
+	// as the source of truth, exactly as v0.3.0 shipped it.
+	//
+	// When neither legacyMode nor v3InlineMode is set, the config is in
+	// v0.4.0's file mode: schedule/model live in the externally maintained
+	// quota-warmup.yaml (see warmupfile.go) instead of inline in
+	// config.yaml. status/panel label legacyMode/v3InlineMode as "inline"
+	// and file mode as "file".
+	v3InlineMode bool
 
 	// location is resolved from Timezone (legacy mode) or Advanced.Timezone
 	// (new mode, defaulting to time.Local) at decode time; nil is never
@@ -280,11 +297,26 @@ var legacyOnlyTopLevelKeys = []string{
 	"message", "max-tokens", "max-rounds", "catch-up-minutes",
 }
 
-// detectLegacyFormat reports whether configYAML uses the legacy top-level
-// key shape. A parse failure here is not fatal on its own -- the real
-// yaml.Unmarshal into pluginConfig right after this call will surface the
-// error properly -- so this just conservatively reports "not legacy".
+// v3InlineTopLevelKeys are the v0.3.0 top-level keys that, when present
+// (and no legacyOnlyTopLevelKeys are), mean "still inline, but v0.3.0-style"
+// rather than v0.4.0's default file mode.
+var v3InlineTopLevelKeys = []string{"time", "model", "accounts"}
+
+// detectLegacyFormat reports whether configYAML uses the legacy (pre-v0.3.0)
+// top-level key shape. A parse failure here is not fatal on its own -- the
+// real yaml.Unmarshal into pluginConfig right after this call will surface
+// the error properly -- so this just conservatively reports "not legacy".
 func detectLegacyFormat(configYAML []byte) bool {
+	return topLevelKeyPresent(configYAML, legacyOnlyTopLevelKeys)
+}
+
+// detectV3InlineFormat reports whether configYAML uses the v0.3.0 top-level
+// time/model/accounts shape.
+func detectV3InlineFormat(configYAML []byte) bool {
+	return topLevelKeyPresent(configYAML, v3InlineTopLevelKeys)
+}
+
+func topLevelKeyPresent(configYAML []byte, keys []string) bool {
 	if len(configYAML) == 0 {
 		return false
 	}
@@ -292,7 +324,7 @@ func detectLegacyFormat(configYAML []byte) bool {
 	if err := yaml.Unmarshal(configYAML, &raw); err != nil {
 		return false
 	}
-	for _, key := range legacyOnlyTopLevelKeys {
+	for _, key := range keys {
 		if _, ok := raw[key]; ok {
 			return true
 		}
@@ -303,12 +335,15 @@ func detectLegacyFormat(configYAML []byte) bool {
 // decodeConfig parses raw plugin.register/plugin.reconfigure request bytes
 // (the {"config_yaml": <bytes>} envelope) into a fully defaulted pluginConfig.
 //
-// It supports two config shapes: the legacy default/providers/auths block
-// (detected by detectLegacyFormat, resolved exactly as it always has been
-// -- see the legacyMode branch below) and the v0.3.0 minimal
-// time/accounts/model/advanced shape (the else branch). Callers (main.go's
-// plugin.register handler) can check the returned cfg.legacyMode to decide
-// whether to emit the "consider migrating" hostLog notice.
+// It supports three config shapes, in priority order: the legacy
+// default/providers/auths block (detected by detectLegacyFormat, resolved
+// exactly as it always has been -- see the legacyMode branch below), the
+// v0.3.0 top-level time/model/accounts shape (v3InlineMode, resolved exactly
+// as v0.3.0 shipped it), and v0.4.0's default file mode (neither flag set:
+// schedule/model live in the externally maintained quota-warmup.yaml, see
+// warmupfile.go). Callers (main.go's plugin.register handler) can check the
+// returned cfg.legacyMode/cfg.v3InlineMode to decide whether to emit the
+// "consider migrating" hostLog notice.
 func decodeConfig(raw []byte) (pluginConfig, error) {
 	var req lifecycleRequest
 	if len(raw) > 0 {
@@ -318,12 +353,14 @@ func decodeConfig(raw []byte) (pluginConfig, error) {
 	}
 	cfg := defaultPluginConfig()
 	legacyMode := detectLegacyFormat(req.ConfigYAML)
+	v3InlineMode := !legacyMode && detectV3InlineFormat(req.ConfigYAML)
 	if len(req.ConfigYAML) > 0 {
 		if err := yaml.Unmarshal(req.ConfigYAML, &cfg); err != nil {
 			return pluginConfig{}, fmt.Errorf("parse plugin config: %w", err)
 		}
 	}
 	cfg.legacyMode = legacyMode
+	cfg.v3InlineMode = v3InlineMode
 
 	if legacyMode {
 		if strings.TrimSpace(cfg.Message) == "" {
@@ -355,11 +392,14 @@ func decodeConfig(raw []byte) (pluginConfig, error) {
 		return cfg, nil
 	}
 
-	// New (v0.3.0) format: flatten Advanced.* onto the shared fields (with
-	// their v0.3.0 defaults, not the legacy defaultPluginConfig() ones) so
-	// the rest of the codebase reads cfg.BaseURL/cfg.Message/... exactly as
-	// before regardless of which format was used.
-	if len(cfg.TimeRaw) == 0 {
+	// Not legacy: either v3InlineMode (v0.3.0 top-level time/model/accounts)
+	// or v0.4.0's default file mode. Advanced.* flattens onto the shared
+	// fields (with their new-format defaults, not the legacy
+	// defaultPluginConfig() ones) in both cases, since "advanced: 的全局项
+	// ... 在两种模式下都从 config.yaml 读" -- only the TimeRaw default below
+	// is specific to v3InlineMode (file mode never reads cfg.TimeRaw at all;
+	// its schedule comes from quota-warmup.yaml instead).
+	if v3InlineMode && len(cfg.TimeRaw) == 0 {
 		cfg.TimeRaw = flexStringList{defaultTime}
 	}
 	if strings.TrimSpace(cfg.Advanced.Timezone) == "" {

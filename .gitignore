@@ -4,3 +4,6 @@
 *.sha256
 /cpa-quota-warmup
 /quota-warmup/
+/quota-warmup.yaml
+/overrides.json
+/overrides.json.migrated

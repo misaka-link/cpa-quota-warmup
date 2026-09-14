@@ -47,7 +47,6 @@ const (
 	msgRunFailed             msgKey = "run_failed"
 
 	// v0.3.0 additions.
-	msgLegacyFormatDetected      msgKey = "legacy_format_detected"
 	msgNoAccountsConfigured      msgKey = "no_accounts_configured"
 	msgInvalidTimeExpr           msgKey = "invalid_time_expr"
 	msgNoCandidateModelAvailable msgKey = "no_candidate_model_available"
@@ -59,6 +58,19 @@ const (
 	msgSetSaved                  msgKey = "set_saved"
 	msgSetCleared                msgKey = "set_cleared"
 	msgSkippedNotInAccounts      msgKey = "skipped_not_in_accounts"
+
+	// v0.4.0 additions: the externally maintained quota-warmup.yaml (file
+	// mode), the inline-to-file migration notice, and overrides.json's
+	// one-time migration into it.
+	msgWarmupFileError        msgKey = "warmup_file_error"
+	msgWarmupFileParseFailed  msgKey = "warmup_file_parse_failed"
+	msgOverridesMigrated      msgKey = "overrides_migrated"
+	msgOverridesMigrateFailed msgKey = "overrides_migrate_failed"
+	msgInlineModeNotice       msgKey = "inline_mode_notice"
+	msgSetUnsupportedLegacy   msgKey = "set_unsupported_legacy"
+	msgSetNothingToUpdate     msgKey = "set_nothing_to_update"
+	msgSetInvalidEnabled      msgKey = "set_invalid_enabled"
+	msgSkippedFileDisabled    msgKey = "skipped_file_disabled"
 
 	msgUIPageTitle             msgKey = "ui_page_title"
 	msgUIPageSubtitle          msgKey = "ui_page_subtitle"
@@ -79,6 +91,7 @@ const (
 	msgUIColTimes              msgKey = "ui_col_times"
 	msgUIColNextTrigger        msgKey = "ui_col_next_trigger"
 	msgUIColStatus             msgKey = "ui_col_status"
+	msgUIColActions            msgKey = "ui_col_actions"
 	msgUISectionRecent         msgKey = "ui_section_recent"
 	msgUIColDate               msgKey = "ui_col_date"
 	msgUIColTime               msgKey = "ui_col_time"
@@ -110,13 +123,21 @@ const (
 	msgUITimezoneAuto     msgKey = "ui_timezone_auto"
 	msgUITimezoneManual   msgKey = "ui_timezone_manual"
 	msgUINoAccountsHint   msgKey = "ui_no_accounts_hint"
-	msgUIColModelSource   msgKey = "ui_col_model_source"
 	msgUIModelSave        msgKey = "ui_model_save"
 	msgUIModelAuto        msgKey = "ui_model_auto"
 	msgUIModelPlaceholder msgKey = "ui_model_placeholder"
 	msgUISetSaved         msgKey = "ui_set_saved"
 	msgUISetCleared       msgKey = "ui_set_cleared"
 	msgUISetFailed        msgKey = "ui_set_failed"
+
+	// v0.4.0 additions: mode/config-file display and the file-mode
+	// enabled/time editors.
+	msgUILabelMode       msgKey = "ui_label_mode"
+	msgUIModeFile        msgKey = "ui_mode_file"
+	msgUIModeInline      msgKey = "ui_mode_inline"
+	msgUILabelConfigFile msgKey = "ui_label_config_file"
+	msgUILabelParseError msgKey = "ui_label_parse_error"
+	msgUITimePlaceholder msgKey = "ui_time_placeholder"
 )
 
 // messagesEN is the source-of-truth key set: every other language map is
@@ -139,7 +160,6 @@ var messagesEN = map[msgKey]string{
 	msgEngineNotRunning:      "engine not running",
 	msgRunFailed:             "run failed: %s",
 
-	msgLegacyFormatDetected:      "legacy config format detected; consider switching to the time/accounts style",
 	msgNoAccountsConfigured:      "no accounts configured, nothing will be warmed up",
 	msgInvalidTimeExpr:           "failed to parse time expression, skipped: %s",
 	msgNoCandidateModelAvailable: "none of provider=%s's candidate models are exposed by GET /v1/models, skipping",
@@ -151,6 +171,15 @@ var messagesEN = map[msgKey]string{
 	msgSetSaved:                  "saved",
 	msgSetCleared:                "cleared, back to auto-selection",
 	msgSkippedNotInAccounts:      "not included in accounts[]",
+	msgWarmupFileError:           "failed to maintain %s: %v",
+	msgWarmupFileParseFailed:     "%s failed to parse, continuing with the last valid configuration: %v",
+	msgOverridesMigrated:         "migrated overrides.json's model overrides into %s (renamed to .migrated)",
+	msgOverridesMigrateFailed:    "failed to migrate overrides.json into %s: %v",
+	msgInlineModeNotice:          "currently using the legacy inline config (time/model/accounts in config.yaml); you can migrate by removing those top-level keys and keeping just enabled: true, which auto-generates %s",
+	msgSetUnsupportedLegacy:      "the legacy (v0.1/v0.2) inline config does not support panel edits; please upgrade the config format",
+	msgSetNothingToUpdate:        "nothing to update: pass at least one of enabled/time/model",
+	msgSetInvalidEnabled:         "enabled must be true or false",
+	msgSkippedFileDisabled:       "disabled",
 
 	msgUIPageTitle:             "Quota Warmup",
 	msgUIPageSubtitle:          "Per-account 5-hour quota warmup schedule",
@@ -171,6 +200,7 @@ var messagesEN = map[msgKey]string{
 	msgUIColTimes:              "Times",
 	msgUIColNextTrigger:        "Next trigger",
 	msgUIColStatus:             "Status",
+	msgUIColActions:            "Actions",
 	msgUISectionRecent:         "Recent results",
 	msgUIColDate:               "Date",
 	msgUIColTime:               "Time",
@@ -200,13 +230,17 @@ var messagesEN = map[msgKey]string{
 	msgUITimezoneAuto:     "Auto (follows the host process)",
 	msgUITimezoneManual:   "Manually set",
 	msgUINoAccountsHint:   "No accounts configured, nothing will be warmed up",
-	msgUIColModelSource:   "Model source",
 	msgUIModelSave:        "Save",
 	msgUIModelAuto:        "Auto",
 	msgUIModelPlaceholder: "Model",
 	msgUISetSaved:         "Saved",
 	msgUISetCleared:       "Cleared",
-	msgUISetFailed:        "Failed to save",
+	msgUILabelMode:        "Mode",
+	msgUIModeFile:         "External file",
+	msgUIModeInline:       "Inline (legacy)",
+	msgUILabelConfigFile:  "Config file path",
+	msgUILabelParseError:  "Parse error",
+	msgUITimePlaceholder:  "Time, e.g. 05:30 or a cron expression",
 }
 
 var messagesZhCN = map[msgKey]string{
@@ -227,7 +261,6 @@ var messagesZhCN = map[msgKey]string{
 	msgEngineNotRunning:      "引擎未运行",
 	msgRunFailed:             "执行失败：%s",
 
-	msgLegacyFormatDetected:      "检测到旧版配置格式，建议改为 time/accounts 写法",
 	msgNoAccountsConfigured:      "未配置 accounts，不会预热任何账号",
 	msgInvalidTimeExpr:           "时间表达式解析失败，已跳过：%s",
 	msgNoCandidateModelAvailable: "provider=%s 的候选模型均未出现在 GET /v1/models 中，跳过",
@@ -239,6 +272,15 @@ var messagesZhCN = map[msgKey]string{
 	msgSetSaved:                  "已保存",
 	msgSetCleared:                "已清除，恢复自动选择",
 	msgSkippedNotInAccounts:      "未包含在 accounts 列表中",
+	msgWarmupFileError:           "维护 %s 失败：%v",
+	msgWarmupFileParseFailed:     "%s 解析失败，继续使用上一次有效配置：%v",
+	msgOverridesMigrated:         "已将 overrides.json 中的模型覆盖迁移到 %s（原文件已重命名为 .migrated）",
+	msgOverridesMigrateFailed:    "迁移 overrides.json 到 %s 失败：%v",
+	msgInlineModeNotice:          "当前使用旧版内联配置（time/model/accounts 写在 config.yaml），可删除这些顶层键、只保留 enabled: true 来迁移到独立文件（自动生成 %s）",
+	msgSetUnsupportedLegacy:      "旧版内联配置（v0.1/v0.2）不支持面板设置，请升级配置格式",
+	msgSetNothingToUpdate:        "没有要更新的内容：enabled/time/model 至少传一个",
+	msgSetInvalidEnabled:         "enabled 必须是 true 或 false",
+	msgSkippedFileDisabled:       "未启用",
 
 	msgUIPageTitle:             "配额预热",
 	msgUIPageSubtitle:          "各账号 5 小时额度窗口的预热计划",
@@ -259,6 +301,7 @@ var messagesZhCN = map[msgKey]string{
 	msgUIColTimes:              "时间点",
 	msgUIColNextTrigger:        "下次触发",
 	msgUIColStatus:             "状态",
+	msgUIColActions:            "操作",
 	msgUISectionRecent:         "最近记录",
 	msgUIColDate:               "日期",
 	msgUIColTime:               "时刻",
@@ -288,13 +331,17 @@ var messagesZhCN = map[msgKey]string{
 	msgUITimezoneAuto:     "自动（跟随宿主进程）",
 	msgUITimezoneManual:   "已手动设置",
 	msgUINoAccountsHint:   "未配置 accounts，不会预热任何账号",
-	msgUIColModelSource:   "模型来源",
 	msgUIModelSave:        "保存",
 	msgUIModelAuto:        "自动",
 	msgUIModelPlaceholder: "模型",
 	msgUISetSaved:         "已保存",
 	msgUISetCleared:       "已清除",
-	msgUISetFailed:        "保存失败",
+	msgUILabelMode:        "模式",
+	msgUIModeFile:         "独立文件",
+	msgUIModeInline:       "内联（旧版）",
+	msgUILabelConfigFile:  "配置文件路径",
+	msgUILabelParseError:  "解析错误",
+	msgUITimePlaceholder:  "时间，如 05:30 或 cron 表达式",
 }
 
 var messagesZhTW = map[msgKey]string{
@@ -315,7 +362,6 @@ var messagesZhTW = map[msgKey]string{
 	msgEngineNotRunning:      "引擎未執行",
 	msgRunFailed:             "執行失敗：%s",
 
-	msgLegacyFormatDetected:      "偵測到舊版設定格式，建議改為 time/accounts 寫法",
 	msgNoAccountsConfigured:      "未設定 accounts，不會預熱任何帳號",
 	msgInvalidTimeExpr:           "時間表達式解析失敗，已略過：%s",
 	msgNoCandidateModelAvailable: "provider=%s 的候選模型均未出現在 GET /v1/models 中，略過",
@@ -327,6 +373,15 @@ var messagesZhTW = map[msgKey]string{
 	msgSetSaved:                  "已儲存",
 	msgSetCleared:                "已清除，恢復自動選擇",
 	msgSkippedNotInAccounts:      "未包含在 accounts 清單中",
+	msgWarmupFileError:           "維護 %s 失敗：%v",
+	msgWarmupFileParseFailed:     "%s 解析失敗，繼續使用上一次有效設定：%v",
+	msgOverridesMigrated:         "已將 overrides.json 中的模型覆蓋遷移到 %s（原檔案已重新命名為 .migrated）",
+	msgOverridesMigrateFailed:    "遷移 overrides.json 到 %s 失敗：%v",
+	msgInlineModeNotice:          "目前使用舊版內聯設定（time/model/accounts 寫在 config.yaml），可刪除這些頂層鍵、只保留 enabled: true 來遷移到獨立檔案（自動產生 %s）",
+	msgSetUnsupportedLegacy:      "舊版內聯設定（v0.1/v0.2）不支援面板設定，請升級設定格式",
+	msgSetNothingToUpdate:        "沒有要更新的內容：enabled/time/model 至少傳一個",
+	msgSetInvalidEnabled:         "enabled 必須是 true 或 false",
+	msgSkippedFileDisabled:       "未啟用",
 
 	msgUIPageTitle:             "配額預熱",
 	msgUIPageSubtitle:          "各帳號 5 小時額度視窗的預熱計畫",
@@ -347,6 +402,7 @@ var messagesZhTW = map[msgKey]string{
 	msgUIColTimes:              "時間點",
 	msgUIColNextTrigger:        "下次觸發",
 	msgUIColStatus:             "狀態",
+	msgUIColActions:            "操作",
 	msgUISectionRecent:         "最近記錄",
 	msgUIColDate:               "日期",
 	msgUIColTime:               "時刻",
@@ -376,13 +432,17 @@ var messagesZhTW = map[msgKey]string{
 	msgUITimezoneAuto:     "自動（跟隨宿主行程）",
 	msgUITimezoneManual:   "已手動設定",
 	msgUINoAccountsHint:   "未設定 accounts，不會預熱任何帳號",
-	msgUIColModelSource:   "模型來源",
 	msgUIModelSave:        "儲存",
 	msgUIModelAuto:        "自動",
 	msgUIModelPlaceholder: "模型",
 	msgUISetSaved:         "已儲存",
 	msgUISetCleared:       "已清除",
-	msgUISetFailed:        "儲存失敗",
+	msgUILabelMode:        "模式",
+	msgUIModeFile:         "獨立檔案",
+	msgUIModeInline:       "內聯（舊版）",
+	msgUILabelConfigFile:  "設定檔路徑",
+	msgUILabelParseError:  "解析錯誤",
+	msgUITimePlaceholder:  "時間，如 05:30 或 cron 表達式",
 }
 
 // messagesRU. Written as natural technical Russian, not a machine-translated
@@ -410,7 +470,6 @@ var messagesRU = map[msgKey]string{
 	msgEngineNotRunning:      "движок не запущен",
 	msgRunFailed:             "запуск завершился ошибкой: %s",
 
-	msgLegacyFormatDetected:      "обнаружен устаревший формат конфигурации; рекомендуем перейти на стиль time/accounts",
 	msgNoAccountsConfigured:      "аккаунты не настроены (accounts), прогрев не будет выполняться",
 	msgInvalidTimeExpr:           "не удалось разобрать выражение времени, пропущено: %s",
 	msgNoCandidateModelAvailable: "ни одна из моделей-кандидатов provider=%s не найдена в GET /v1/models, пропускаем",
@@ -422,6 +481,15 @@ var messagesRU = map[msgKey]string{
 	msgSetSaved:                  "сохранено",
 	msgSetCleared:                "сброшено, снова автовыбор",
 	msgSkippedNotInAccounts:      "не включён в список accounts",
+	msgWarmupFileError:           "не удалось поддерживать %s: %v",
+	msgWarmupFileParseFailed:     "не удалось разобрать %s, продолжаем с последней рабочей конфигурацией: %v",
+	msgOverridesMigrated:         "переопределения моделей из overrides.json перенесены в %s (файл переименован в .migrated)",
+	msgOverridesMigrateFailed:    "не удалось перенести overrides.json в %s: %v",
+	msgInlineModeNotice:          "сейчас используется устаревшая встроенная конфигурация (time/model/accounts в config.yaml); можно перейти на внешний файл, удалив эти ключи верхнего уровня и оставив только enabled: true (файл %s будет создан автоматически)",
+	msgSetUnsupportedLegacy:      "устаревшая встроенная конфигурация (v0.1/v0.2) не поддерживает редактирование через панель, обновите формат конфигурации",
+	msgSetNothingToUpdate:        "нечего обновлять: укажите хотя бы один из enabled/time/model",
+	msgSetInvalidEnabled:         "enabled должен быть true или false",
+	msgSkippedFileDisabled:       "отключён",
 
 	msgUIPageTitle:             "Прогрев квоты",
 	msgUIPageSubtitle:          "График прогрева 5-часового окна квоты для каждого аккаунта",
@@ -442,6 +510,7 @@ var messagesRU = map[msgKey]string{
 	msgUIColTimes:              "Время",
 	msgUIColNextTrigger:        "Следующий запуск",
 	msgUIColStatus:             "Статус",
+	msgUIColActions:            "Действия",
 	msgUISectionRecent:         "Последние результаты",
 	msgUIColDate:               "Дата",
 	msgUIColTime:               "Время",
@@ -471,13 +540,17 @@ var messagesRU = map[msgKey]string{
 	msgUITimezoneAuto:     "Авто (по часовому поясу хоста)",
 	msgUITimezoneManual:   "Задан вручную",
 	msgUINoAccountsHint:   "Аккаунты не настроены (accounts), прогрев не будет выполняться",
-	msgUIColModelSource:   "Источник модели",
 	msgUIModelSave:        "Сохранить",
 	msgUIModelAuto:        "Авто",
 	msgUIModelPlaceholder: "Модель",
 	msgUISetSaved:         "Сохранено",
 	msgUISetCleared:       "Сброшено",
-	msgUISetFailed:        "Не удалось сохранить",
+	msgUILabelMode:        "Режим",
+	msgUIModeFile:         "Внешний файл",
+	msgUIModeInline:       "Встроенный (устаревший)",
+	msgUILabelConfigFile:  "Путь к файлу конфигурации",
+	msgUILabelParseError:  "Ошибка разбора",
+	msgUITimePlaceholder:  "Время, например 05:30 или cron-выражение",
 }
 
 var messagesByLang = map[lang]map[msgKey]string{

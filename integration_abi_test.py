@@ -13,6 +13,7 @@ import ctypes
 import json
 import pathlib
 import sys
+import tempfile
 
 
 class Buffer(ctypes.Structure):
@@ -90,8 +91,21 @@ def decode_management(result: dict) -> tuple[int, dict, bytes]:
     return result.get("StatusCode", 0), headers, body
 
 
-BASE_CONFIG = """
+def file_mode_config(config_file: str) -> str:
+    # v0.4.0 default: file mode, just enabled + config-file (advanced still
+    # applies the same way it did in v0.3.0's inline config).
+    return f"""
 enabled: true
+config-file: "{config_file}"
+advanced:
+  message: "hi"
+"""
+
+
+# V3_INLINE_CONFIG exercises the v0.3.0 top-level time/model/accounts shape,
+# which must still parse (and be detected as v3InlineMode, not file mode)
+# unchanged.
+V3_INLINE_CONFIG = """
 time: "05:30"
 model: "auto"
 accounts: ["antigravity-*"]
@@ -123,8 +137,11 @@ def main() -> None:
     if init(ctypes.byref(host), ctypes.byref(plugin)) != 0:
         raise RuntimeError("cliproxy_plugin_init failed")
 
+    tmp_dir = tempfile.mkdtemp(prefix="cpa-quota-warmup-abi-")
+    warmup_file = str(pathlib.Path(tmp_dir) / "quota-warmup.yaml")
+
     try:
-        registration = invoke(plugin, "plugin.register", register_request(BASE_CONFIG))
+        registration = invoke(plugin, "plugin.register", register_request(file_mode_config(warmup_file)))
         capabilities = registration["capabilities"]
         if not capabilities.get("usage_plugin") or not capabilities.get("management_api"):
             raise AssertionError(f"unexpected capabilities: {capabilities}")
@@ -134,10 +151,10 @@ def main() -> None:
         plugin_id = registration["metadata"]["Name"]
         if plugin_id != "cpa-quota-warmup":
             raise AssertionError(f"unexpected plugin metadata name: {plugin_id}")
-        # v0.3.0 reduced ConfigFields to exactly these 5 entries (enabled/
-        # time/model/accounts/advanced) -- see main.go's registrationPayload.
+        # v0.4.0 reduced ConfigFields to exactly these 3 entries (enabled/
+        # config-file/advanced) -- see main.go's registrationPayload.
         field_names = [f["Name"] for f in registration["metadata"]["ConfigFields"]]
-        if field_names != ["enabled", "time", "model", "accounts", "advanced"]:
+        if field_names != ["enabled", "config-file", "advanced"]:
             raise AssertionError(f"unexpected ConfigFields names: {field_names}")
 
         mgmt_routes = invoke(
@@ -213,19 +230,17 @@ def main() -> None:
             # than silently reporting zero auths.
             raise AssertionError(f"expected auths_error with no host wired up: {payload}")
 
-        # v0.3.0: the new minimal config's time/model/accounts/legacy_mode
-        # must round-trip into the status JSON, and available_models must be
-        # present (an empty list is fine -- there is no real CPA listening
-        # at the configured base-url in this sandboxed test).
+        # v0.4.0: file mode's mode/config_file/legacy_mode must round-trip
+        # into the status JSON, and available_models must be present (an
+        # empty list is fine -- there is no real CPA listening at the
+        # configured base-url in this sandboxed test).
         cfg_summary = payload["config"]
-        if cfg_summary.get("time") != ["05:30"]:
-            raise AssertionError(f"unexpected config.time: {cfg_summary}")
-        if cfg_summary.get("model") != "auto":
-            raise AssertionError(f"unexpected config.model: {cfg_summary}")
-        if cfg_summary.get("accounts") != ["antigravity-*"]:
-            raise AssertionError(f"unexpected config.accounts: {cfg_summary}")
+        if cfg_summary.get("mode") != "file":
+            raise AssertionError(f"unexpected config.mode: {cfg_summary}")
+        if cfg_summary.get("config_file") != warmup_file:
+            raise AssertionError(f"unexpected config.config_file: {cfg_summary}")
         if cfg_summary.get("legacy_mode"):
-            raise AssertionError(f"expected legacy_mode=false for the new-format config: {cfg_summary}")
+            raise AssertionError(f"expected legacy_mode=false for file mode: {cfg_summary}")
         if not cfg_summary.get("timezone_auto"):
             raise AssertionError(f"expected timezone_auto=true when advanced.timezone is unset: {cfg_summary}")
         if "available_models" not in payload or not isinstance(payload["available_models"], list):
@@ -250,7 +265,7 @@ def main() -> None:
         # plugin.reconfigure must hot-swap the config without erroring, and
         # the change must be visible through the status route immediately.
         reconfigured = invoke(
-            plugin, "plugin.reconfigure", register_request(BASE_CONFIG.replace('"hi"', '"yo"'))
+            plugin, "plugin.reconfigure", register_request(file_mode_config(warmup_file).replace('"hi"', '"yo"'))
         )
         if reconfigured["metadata"]["Name"] != plugin_id:
             raise AssertionError("reconfigure returned unexpected metadata")
@@ -265,17 +280,51 @@ def main() -> None:
         if payload["config"]["message"] != "yo":
             raise AssertionError(f"reconfigure did not take effect: {payload['config']}")
 
-        # /set: an invalid scope and a missing model are both rejected with
-        # a 400 before ever touching overrides.json.
+        # File mode's /set: a missing auth is rejected with 400 before ever
+        # touching quota-warmup.yaml.
         set_status, _, set_body = decode_management(
             invoke(
                 plugin,
                 "management.handle",
-                management_request(f"/v0/resource/plugins/{plugin_id}/set", {"scope": "bogus", "model": "x"}),
+                management_request(f"/v0/resource/plugins/{plugin_id}/set", {"model": "x"}),
             )
         )
         if set_status != 400:
-            raise AssertionError(f"expected 400 for an invalid scope, got {set_status} body={set_body!r}")
+            raise AssertionError(f"expected 400 for a missing auth, got {set_status} body={set_body!r}")
+
+        # With an auth given, the route is reachable and fails safely (500,
+        # with a clear error) rather than crashing or hanging: there is no
+        # real host.auth.list in this sandboxed test, so quota-warmup.yaml
+        # was never actually loaded/generated, exactly like /run's 500 above.
+        set_status, _, set_body = decode_management(
+            invoke(
+                plugin,
+                "management.handle",
+                management_request(
+                    f"/v0/resource/plugins/{plugin_id}/set",
+                    {"auth": "antigravity-alice.json", "enabled": "true", "lang": "zh-TW"},
+                ),
+            )
+        )
+        if set_status != 500 or b"error" not in set_body:
+            raise AssertionError(f"file-mode set response: status={set_status}, body={set_body!r}")
+        set_payload = json.loads(set_body)
+        if set_payload.get("lang") != "zh-TW":
+            raise AssertionError(f"expected ?lang=zh-TW to be honored on /set, got {set_payload}")
+
+        # The v0.3.0 top-level time/model/accounts shape (v3InlineMode) must
+        # still register cleanly, be detected as inline (not legacy), and
+        # keep its own overrides.json-backed /set behavior working exactly
+        # as it did in v0.3.0.
+        v3_reconfigured = invoke(plugin, "plugin.reconfigure", register_request(V3_INLINE_CONFIG))
+        if v3_reconfigured["metadata"]["Name"] != plugin_id:
+            raise AssertionError("reconfigure (v3 inline) returned unexpected metadata")
+        status, _, body = decode_management(
+            invoke(plugin, "management.handle", management_request(f"/v0/resource/plugins/{plugin_id}/status"))
+        )
+        payload = json.loads(body)
+        if payload["config"].get("mode") != "inline" or payload["config"].get("legacy_mode"):
+            raise AssertionError(f"expected mode=inline legacy_mode=false for v3 inline config: {payload['config']}")
 
         # A valid scope=global set: there is no real CPA at the configured
         # base-url in this sandboxed test, so the GET /v1/models precheck
@@ -297,18 +346,6 @@ def main() -> None:
         if set_payload.get("lang") != "zh-TW" or not set_payload.get("warning"):
             raise AssertionError(f"expected a precheck-failed warning with lang=zh-TW: {set_payload}")
 
-        # The override must be visible through status (as model_source
-        # "panel"), and host.auth.list has no real entries in this
-        # sandboxed test, so "auths" itself stays empty -- the coverage
-        # that matters here is that the route round-trips through the
-        # overrides store without erroring.
-        status, _, body = decode_management(
-            invoke(plugin, "management.handle", management_request(f"/v0/resource/plugins/{plugin_id}/status"))
-        )
-        payload = json.loads(body)
-        if not payload.get("auths_error"):
-            raise AssertionError(f"expected auths_error to persist after /set: {payload}")
-
         # model=auto clears the override rather than failing.
         set_status, _, set_body = decode_management(
             invoke(
@@ -320,8 +357,9 @@ def main() -> None:
         if set_status != 200:
             raise AssertionError(f"expected 200 clearing the global override, got {set_status} body={set_body!r}")
 
-        # The legacy (pre-v0.3.0) config shape must still register cleanly
-        # and be detected as legacy in the status JSON.
+        # The legacy (pre-v0.3.0) config shape must still register cleanly,
+        # be detected as legacy in the status JSON (mode=inline,
+        # legacy_mode=true), and /set must be gated off entirely (501).
         legacy_reconfigured = invoke(plugin, "plugin.reconfigure", register_request(LEGACY_CONFIG))
         if legacy_reconfigured["metadata"]["Name"] != plugin_id:
             raise AssertionError("reconfigure (legacy) returned unexpected metadata")
@@ -329,8 +367,18 @@ def main() -> None:
             invoke(plugin, "management.handle", management_request(f"/v0/resource/plugins/{plugin_id}/status"))
         )
         payload = json.loads(body)
-        if not payload["config"].get("legacy_mode"):
-            raise AssertionError(f"expected legacy_mode=true after reconfiguring with the legacy shape: {payload['config']}")
+        if payload["config"].get("mode") != "inline" or not payload["config"].get("legacy_mode"):
+            raise AssertionError(f"expected mode=inline legacy_mode=true after reconfiguring with the legacy shape: {payload['config']}")
+
+        set_status, _, set_body = decode_management(
+            invoke(
+                plugin,
+                "management.handle",
+                management_request(f"/v0/resource/plugins/{plugin_id}/set", {"scope": "global", "model": "x"}),
+            )
+        )
+        if set_status != 501:
+            raise AssertionError(f"expected 501 for /set under the legacy config, got {set_status} body={set_body!r}")
 
         invoke(plugin, "plugin.quiesce", {})
 

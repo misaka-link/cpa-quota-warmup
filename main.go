@@ -11,7 +11,7 @@ import (
 
 const (
 	pluginName    = "cpa-quota-warmup"
-	pluginVersion = "0.3.0"
+	pluginVersion = "0.4.1"
 	logPrefix     = "[cpa-quota-warmup] "
 )
 
@@ -38,6 +38,32 @@ func ensureEngineRunning(cfg pluginConfig) error {
 		return err
 	}
 	e := newEngine(cfg, newStateStore(path), newOverridesStore(overridesPath), hostAuthLister{})
+
+	if !cfg.legacyMode && !cfg.v3InlineMode {
+		// v0.4.0 file mode: wire up the externally maintained
+		// quota-warmup.yaml and, best-effort, migrate a stale v0.3.0
+		// overrides.json into it (see migrateOverridesToWarmupFile's doc
+		// comment). Neither step may block startup: a transient
+		// host.auth.list failure here just means the first tick (30s later)
+		// generates/reconciles the file instead.
+		warmupPath, pathErr := resolveWarmupFilePath(cfg)
+		if pathErr != nil {
+			return pathErr
+		}
+		e.warmupFile = newWarmupFileManager(warmupPath)
+		l := logLanguage(cfg)
+		if entries, listErr := e.auths.ListAuths(); listErr == nil {
+			if migrated, migErr := migrateOverridesToWarmupFile(overridesPath, e.warmupFile, entries); migErr != nil {
+				hostLog("warn", tr(l, msgOverridesMigrateFailed, warmupPath, migErr))
+			} else if migrated {
+				hostLog("info", tr(l, msgOverridesMigrated, warmupPath))
+			}
+			if err := e.warmupFile.ensureFresh(entries); err != nil {
+				hostLog("warn", tr(l, msgWarmupFileError, warmupPath, err))
+			}
+		}
+	}
+
 	e.start()
 	currentEngine = e
 	return nil
@@ -79,8 +105,11 @@ func handleMethod(method string, raw []byte) ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
-		if cfg.legacyMode {
-			hostLog("info", tr(logLanguage(cfg), msgLegacyFormatDetected))
+		if cfg.legacyMode || cfg.v3InlineMode {
+			warmupPath, pathErr := resolveWarmupFilePath(cfg)
+			if pathErr == nil {
+				hostLog("info", tr(logLanguage(cfg), msgInlineModeNotice, warmupPath))
+			}
 		}
 		if err := ensureEngineRunning(cfg); err != nil {
 			return nil, err
@@ -136,19 +165,19 @@ func registrationPayload() any {
 			// lines and the status/run JSON do (see i18n.go). Each is one
 			// bilingual sentence (中文 / English) instead.
 			//
-			// v0.3.0 reduced this list from ~22 field-by-field entries to just
-			// the minimal-config surface (enabled/time/model/accounts) plus one
-			// "advanced" entry enumerating every optional sub-key, per the
-			// "配置太复杂、小白看不懂" simplification request. The legacy
-			// default/providers/auths/timezone/... keys still parse exactly as
-			// before (see config.go's legacyMode) but are intentionally no
-			// longer advertised here -- new configs should use the form below.
+			// v0.4.0 reduced this list further to just 3 entries: even
+			// per-account schedule/model configuration is no longer done in
+			// config.yaml at all -- it lives in the externally maintained
+			// quota-warmup.yaml (see warmupfile.go), which this plugin
+			// generates and keeps in sync with host.auth.list on its own.
+			// The v0.3.0 top-level time/model/accounts keys and the legacy
+			// (v0.1/v0.2) default/providers/auths/timezone/... keys still
+			// parse exactly as before (see config.go's legacyMode/
+			// v3InlineMode) but are intentionally no longer advertised here.
 			ConfigFields: []pluginapi.ConfigField{
 				{Name: "enabled", Type: pluginapi.ConfigFieldTypeBoolean, Description: "为 false 时插件完全不预热任何账号 / When false, the plugin never warms up any account."},
-				{Name: "time", Type: pluginapi.ConfigFieldTypeString, Description: "每天几点预热（24 小时制），可写多个，如 \"05:30, 10:30\"；也支持标准 5 段 cron 表达式，如 \"30 5,10,15,20 * * *\"；默认 \"05:30\" / What time(s) of day to warm up (24h), e.g. \"05:30, 10:30\"; also accepts a standard 5-field cron expression, e.g. \"30 5,10,15,20 * * *\". Default \"05:30\"."},
-				{Name: "model", Type: pluginapi.ConfigFieldTypeString, Description: "预热用的模型，默认 \"auto\"（按各 provider 自动选最便宜的可用模型）；也可以直接写模型名，或写成 {provider: model} 的映射 / The model to warm up with. Default \"auto\" (picks the cheapest available model per provider automatically); may also be a literal model name, or a {provider: model} mapping."},
-				{Name: "accounts", Type: pluginapi.ConfigFieldTypeArray, Description: "要预热的认证文件名，支持 * 通配；写 \"*\" 表示全部账号；缺省/空表示不预热任何账号；列表项也可以写成 {match, time, model} 对象，为单个账号单独设置时间/模型 / Auth file names to warm up (glob patterns allowed); \"*\" means every account; empty/omitted means nothing is warmed up. List items may also be {match, time, model} objects to override time/model for one account."},
-				{Name: "advanced", Type: pluginapi.ConfigFieldTypeObject, Description: "高级设置，一般不用改，全部可选：timezone（默认跟随宿主进程本地时区）、base-url（默认 http://127.0.0.1:8317）、api-key（默认读取宿主 config.yaml 的 api-keys[0]）、message（默认 \"hi\"）、max-tokens（默认 16）、max-rounds（默认 3）、catch-up-minutes（默认 60）、language（默认 auto）、log（默认 true）、models（按 provider 覆盖模型，等价于顶层 model 的映射写法） / Advanced settings, all optional and rarely needed: timezone (defaults to the host process's local timezone), base-url (default http://127.0.0.1:8317), api-key (default: api-keys[0] from the host's own config.yaml), message (default \"hi\"), max-tokens (default 16), max-rounds (default 3), catch-up-minutes (default 60), language (default auto), log (default true), models (per-provider model override, equivalent to the top-level model's mapping form)."},
+				{Name: "config-file", Type: pluginapi.ConfigFieldTypeString, Description: "账号预热配置文件路径，默认 <CPA 工作目录>/quota-warmup.yaml；该文件由插件自动生成与维护，每个认证文件一段，直接改这个文件即可（无需重启），也可以在面板上编辑 / Path to the per-account warmup config file. Defaults to <CPA working directory>/quota-warmup.yaml. The plugin generates and maintains this file itself (one section per auth file); edit it directly (no restart needed), or edit it from the panel."},
+				{Name: "advanced", Type: pluginapi.ConfigFieldTypeObject, Description: "高级设置，一般不用改，全部可选：timezone（默认跟随宿主进程本地时区）、base-url（默认 http://127.0.0.1:8317）、api-key（默认读取宿主 config.yaml 的 api-keys[0]）、message（默认 \"hi\"）、max-tokens（默认 16）、max-rounds（默认 3）、catch-up-minutes（默认 60）、language（默认 auto）、log（默认 true） / Advanced settings, all optional and rarely needed: timezone (defaults to the host process's local timezone), base-url (default http://127.0.0.1:8317), api-key (default: api-keys[0] from the host's own config.yaml), message (default \"hi\"), max-tokens (default 16), max-rounds (default 3), catch-up-minutes (default 60), language (default auto), log (default true)."},
 			},
 		},
 		Capabilities: map[string]bool{"usage_plugin": true, "management_api": true},

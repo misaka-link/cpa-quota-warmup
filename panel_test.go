@@ -55,6 +55,20 @@ func TestPanelTemplateStaticTextHasDataI18nAttributes(t *testing.T) {
 	}
 }
 
+// TestPanelTemplateHasActionsHeaderNotModelSourceHeader guards the v0.4.1
+// accounts-table column rework: the old dedicated "model source" column was
+// removed (its value now surfaces as the model input's title attribute
+// instead), and a new "Actions" column (holding the Save/Auto buttons that
+// used to be crammed into the status column) was added in its place.
+func TestPanelTemplateHasActionsHeaderNotModelSourceHeader(t *testing.T) {
+	if !strings.Contains(panelHTMLTemplate, `data-i18n="ui_col_actions"`) {
+		t.Errorf("expected panelHTMLTemplate to contain a data-i18n=\"ui_col_actions\" header, found none")
+	}
+	if strings.Contains(panelHTMLTemplate, "ui_col_model_source") {
+		t.Errorf("expected panelHTMLTemplate to no longer contain a ui_col_model_source header, but it does")
+	}
+}
+
 // enclosingTag returns the nearest "<...>" opening tag that starts before
 // pos in s (an ordinary text position, not inside a tag), i.e. the tag whose
 // content includes the text at pos. Returns "" if none is found nearby.

@@ -211,17 +211,21 @@ const panelHTMLTemplate = `<!doctype html>
   .title p { margin: 4px 0 0; color: var(--muted); font-size: 13px; }
   .ghost-btn {
     appearance: none; border: 1px solid var(--border); background: var(--panel); color: var(--text);
-    font: inherit; font-size: 13px; padding: 7px 14px; border-radius: 6px; cursor: pointer;
+    font: inherit; font-size: 13px; padding: 0 12px; height: 32px; border-radius: 6px; cursor: pointer;
+    display: inline-flex; align-items: center; box-sizing: border-box;
   }
   .ghost-btn:hover { border-color: var(--border-strong); }
   .ghost-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   input[type="text"] {
-    font: inherit; font-size: 13px; padding: 7px 10px; border-radius: 6px;
+    font: inherit; font-size: 13px; padding: 0 10px; height: 32px; border-radius: 6px;
     border: 1px solid var(--border); background: var(--panel); color: var(--text); min-width: 220px;
+    box-sizing: border-box;
   }
-  .model-edit { display: inline-flex; gap: 6px; align-items: center; flex-wrap: wrap; }
-  .model-edit input[type="text"] { min-width: 150px; }
-  .model-edit .ghost-btn { padding: 5px 10px; }
+  input[type="checkbox"] { width: 16px; height: 16px; vertical-align: middle; }
+  .model-edit { display: inline-flex; gap: 6px; align-items: center; flex-wrap: nowrap; }
+  input.model-input { width: 14em; min-width: 0; }
+  input.row-time { width: 12em; min-width: 0; }
+  .row-actions { display: inline-flex; gap: 6px; align-items: center; white-space: nowrap; }
   section.block { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px; margin-bottom: 16px; box-shadow: var(--shadow); }
   .block-head { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; margin-bottom: 14px; }
   .block-head h2 { margin: 0; font-size: 15px; font-weight: 620; }
@@ -229,6 +233,8 @@ const panelHTMLTemplate = `<!doctype html>
   table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
   th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
   th { font-size: 11px; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); font-weight: 600; white-space: nowrap; }
+  #accountsTable td { vertical-align: middle; }
+  #accountsTable th.col-status, #accountsTable td.col-status { min-width: 14em; white-space: normal; }
   tbody tr:last-child td { border-bottom: 0; }
   .scroll { overflow-x: auto; }
   table.kv td:first-child, table.kv th:first-child { width: 220px; color: var(--muted); font-weight: 600; white-space: nowrap; }
@@ -274,10 +280,10 @@ const panelHTMLTemplate = `<!doctype html>
     </div>
     <div class="scroll"><table id="accountsTable">
       <thead><tr>
-        <th data-i18n="ui_col_name">{{ui_col_name}}</th><th data-i18n="ui_col_provider">{{ui_col_provider}}</th><th data-i18n="ui_col_model">{{ui_col_model}}</th><th data-i18n="ui_col_model_source">{{ui_col_model_source}}</th>
-        <th data-i18n="ui_col_times">{{ui_col_times}}</th><th data-i18n="ui_col_next_trigger">{{ui_col_next_trigger}}</th><th data-i18n="ui_col_status">{{ui_col_status}}</th>
+        <th data-i18n="ui_col_name">{{ui_col_name}}</th><th data-i18n="ui_col_provider">{{ui_col_provider}}</th><th data-i18n="ui_label_enabled">{{ui_label_enabled}}</th><th data-i18n="ui_col_model">{{ui_col_model}}</th>
+        <th data-i18n="ui_col_times">{{ui_col_times}}</th><th data-i18n="ui_col_next_trigger">{{ui_col_next_trigger}}</th><th class="col-status" data-i18n="ui_col_status">{{ui_col_status}}</th><th data-i18n="ui_col_actions">{{ui_col_actions}}</th>
       </tr></thead>
-      <tbody><tr><td colspan="7" class="empty" data-i18n="ui_loading">{{ui_loading}}</td></tr></tbody>
+      <tbody><tr><td colspan="8" class="empty" data-i18n="ui_loading">{{ui_loading}}</td></tr></tbody>
     </table></div>
     <datalist id="model-options"></datalist>
     <div id="runResult" hidden>
@@ -362,6 +368,31 @@ const panelHTMLTemplate = `<!doctype html>
       '</span>';
   }
 
+  // modelInputOnlyHTML is modelEditorHTML without the inline Save/Auto
+  // buttons, used in the accounts table's own "Model" column now that those
+  // buttons live in a shared "Actions" column instead (modelActionsHTML).
+  // modelSource (a raw source label like "auto"/"account"/"panel") is
+  // surfaced as the input's title tooltip rather than a dedicated column.
+  function modelInputOnlyHTML(scope, authName, currentValue, modelSource) {
+    var attrs = 'data-scope="' + esc(scope) + '" data-auth="' + esc(authName || "") + '"';
+    var value = (!currentValue || currentValue === "auto") ? "" : currentValue;
+    var title = modelSource ? ' title="' + esc(modelSource) + '"' : "";
+    return '<input type="text" list="model-options" class="model-input" ' + attrs +
+      ' value="' + esc(value) + '" placeholder="' + esc(t("ui_model_placeholder")) + '"' + title + '>';
+  }
+
+  // modelActionsHTML renders the shared "Actions" column's Save/Auto button
+  // pair for inline-mode rows (file-mode rows build their own actions cell
+  // directly in fileRowHTML, since a file-mode "Save" also covers the
+  // enabled/time inputs, not just the model).
+  function modelActionsHTML(scope, authName) {
+    var attrs = 'data-scope="' + esc(scope) + '" data-auth="' + esc(authName || "") + '"';
+    return '<span class="row-actions">' +
+      '<button type="button" class="ghost-btn model-save-btn" ' + attrs + '>' + esc(t("ui_model_save")) + '</button>' +
+      '<button type="button" class="ghost-btn model-auto-btn" ' + attrs + '>' + esc(t("ui_model_auto")) + '</button>' +
+      '</span>';
+  }
+
   // populateModelOptions fills the shared <datalist> from status'
   // available_models, grouped by owned_by so the dropdown at least hints at
   // which provider each id belongs to. A model not in this list can still
@@ -386,6 +417,8 @@ const panelHTMLTemplate = `<!doctype html>
 
   function renderConfig(cfg) {
     cfg = cfg || {};
+    var isFile = cfg.mode === "file";
+    var isV3Inline = cfg.mode === "inline" && !cfg.legacy_mode;
     var timezoneLine = esc(cfg.timezone) || dash();
     if (cfg.timezone_auto) {
       timezoneLine += " (" + esc(t("ui_timezone_auto")) + ")";
@@ -394,13 +427,21 @@ const panelHTMLTemplate = `<!doctype html>
     }
     var rows = [
       [t("ui_label_enabled"), boolText(cfg.enabled)],
-      [t("ui_label_time"), esc((cfg.time || []).join(", ")) || dash()]
+      [t("ui_label_mode"), esc(isFile ? t("ui_mode_file") : t("ui_mode_inline"))]
     ];
-    if (!cfg.legacy_mode) {
-      var accountsValue = (cfg.accounts && cfg.accounts.length)
-        ? esc(cfg.accounts.join(", "))
-        : ('<span class="warn-text">' + esc(t("ui_no_accounts_hint")) + '</span>');
-      rows.push([t("ui_label_accounts"), accountsValue]);
+    if (isFile) {
+      rows.push([t("ui_label_config_file"), esc(cfg.config_file) || dash()]);
+      if (cfg.config_file_error) {
+        rows.push([t("ui_label_parse_error"), '<span class="warn-text">' + esc(cfg.config_file_error) + '</span>']);
+      }
+    } else {
+      rows.push([t("ui_label_time"), esc((cfg.time || []).join(", ")) || dash()]);
+      if (isV3Inline) {
+        var accountsValue = (cfg.accounts && cfg.accounts.length)
+          ? esc(cfg.accounts.join(", "))
+          : ('<span class="warn-text">' + esc(t("ui_no_accounts_hint")) + '</span>');
+        rows.push([t("ui_label_accounts"), accountsValue]);
+      }
     }
     rows = rows.concat([
       [t("ui_label_timezone"), timezoneLine],
@@ -414,22 +455,77 @@ const panelHTMLTemplate = `<!doctype html>
     var html = rows.map(function (r) {
       return "<tr><th>" + esc(r[0]) + "</th><td>" + r[1] + "</td></tr>";
     }).join("");
-    if (!cfg.legacy_mode) {
+    if (isV3Inline) {
       html += "<tr><th>" + esc(t("ui_label_global_model")) + "</th><td>" + modelEditorHTML("global", "", cfg.model) + "</td></tr>";
     }
     document.getElementById("configTable").innerHTML = html;
   }
 
-  function renderAccounts(auths) {
+  // statusCellHTML renders the "Status" column for either row type: real
+  // problems (a.warning -- an invalid time expression or an unavailable
+  // model) stay red, but a plain "not enabled" skip reason is shown muted
+  // gray -- it is the normal, most common state for a fresh install with
+  // many accounts, not an error, and should not read like one.
+  function statusCellHTML(a) {
+    var cell = a.skipped ? ('<span class="no">' + esc(a.skipped) + '</span>') : boolText(a.enabled);
+    if (a.warning) { cell += '<br><span class="warn-text">' + esc(a.warning) + '</span>'; }
+    return cell;
+  }
+
+  // fileRowHTML renders one v0.4.0 file-mode account row: an editable
+  // enabled checkbox, model input (with an "Auto"/自动 shortcut folded into
+  // the shared Actions column), and time input. The Actions column's "Save"
+  // button reads all three current input values and writes them back into
+  // quota-warmup.yaml at once; "Auto" only clears the model field.
+  function fileRowHTML(a) {
+    var enabledCell = '<input type="checkbox" class="row-enabled"' + (a.enabled ? " checked" : "") + '>';
+    var modelValue = (!a.model || a.model === "auto") ? "" : a.model;
+    var modelCell = '<input type="text" list="model-options" class="model-input row-model" value="' + esc(modelValue) +
+      '" placeholder="' + esc(t("ui_model_placeholder")) + '"' + (a.model_source ? ' title="' + esc(a.model_source) + '"' : "") + '>';
+    var timeCell = '<input type="text" class="row-time" value="' + esc((a.times || []).join(", ")) + '" placeholder="' + esc(t("ui_time_placeholder")) + '">';
+    var actionsCell = '<span class="row-actions">' +
+      '<button type="button" class="ghost-btn row-save">' + esc(t("ui_model_save")) + '</button>' +
+      '<button type="button" class="ghost-btn row-model-auto">' + esc(t("ui_model_auto")) + '</button>' +
+      '</span>';
+    return "<tr data-name=\"" + esc(a.name) + "\"><td>" + esc(a.name) + "</td><td>" + esc(a.provider || "") + "</td><td>" +
+      enabledCell + "</td><td>" + modelCell + "</td><td>" +
+      timeCell + "</td><td>" + (esc(a.next_trigger) || dash()) + "</td><td class=\"col-status\">" + statusCellHTML(a) + "</td><td>" + actionsCell + "</td></tr>";
+  }
+
+  // inlineRowHTML renders one v0.3.0-style (inline-mode) account row: the
+  // enabled/time columns are read-only display, and only the model has the
+  // panel/account/global/provider/auto override editor (input in the Model
+  // column, Save/Auto buttons in the shared Actions column).
+  function inlineRowHTML(a) {
+    var modelCell = a.enabled ? modelInputOnlyHTML("auth", a.name, a.model, a.model_source) : (esc(a.model) || dash());
+    var actionsCell = a.enabled ? modelActionsHTML("auth", a.name) : "";
+    return "<tr><td>" + esc(a.name) + "</td><td>" + esc(a.provider || "") + "</td><td>" + dash() + "</td><td>" +
+      modelCell + "</td><td>" + esc((a.times || []).join(", ")) + "</td><td>" +
+      (esc(a.next_trigger) || dash()) + "</td><td class=\"col-status\">" + statusCellHTML(a) + "</td><td>" + actionsCell + "</td></tr>";
+  }
+
+  function renderAccounts(auths, isFile) {
     var rows = auths || [];
-    var body = rows.map(function (a) {
-      var status = a.skipped ? ('<span class="warn-text">' + esc(a.skipped) + '</span>') : boolText(a.enabled);
-      var modelCell = a.enabled ? modelEditorHTML("auth", a.name, a.model) : (esc(a.model) || dash());
-      return "<tr><td>" + esc(a.name) + "</td><td>" + esc(a.provider || "") + "</td><td>" +
-        modelCell + "</td><td>" + esc(a.model_source || "") + "</td><td>" + esc((a.times || []).join(", ")) + "</td><td>" +
-        (esc(a.next_trigger) || dash()) + "</td><td>" + status + "</td></tr>";
-    }).join("");
-    document.querySelector("#accountsTable tbody").innerHTML = body || ('<tr><td colspan="7" class="empty">' + dash() + '</td></tr>');
+    var body = rows.map(isFile ? fileRowHTML : inlineRowHTML).join("");
+    document.querySelector("#accountsTable tbody").innerHTML = body || ('<tr><td colspan="8" class="empty">' + dash() + '</td></tr>');
+  }
+
+  // setFileAccount calls the v0.4.0 file-mode /set route: only the
+  // parameters actually passed (non-null) are written, leaving the others
+  // untouched in quota-warmup.yaml.
+  function setFileAccount(name, enabled, timeVal, model) {
+    var url = base + "set?lang=" + encodeURIComponent(lang) + "&auth=" + encodeURIComponent(name);
+    if (enabled !== null && enabled !== undefined) { url += "&enabled=" + (enabled ? "true" : "false"); }
+    if (timeVal) { url += "&time=" + encodeURIComponent(timeVal); }
+    if (model) { url += "&model=" + encodeURIComponent(model); }
+    fetch(url, { cache: "no-store" })
+      .then(function (resp) { return resp.json().then(function (body) { return { ok: resp.ok, body: body }; }); })
+      .then(function (res) {
+        if (!res.ok) { showError((res.body && res.body.error) || t("ui_set_failed")); return; }
+        showError(res.body && res.body.warning ? res.body.warning : "");
+        load();
+      })
+      .catch(function () { showError(t("ui_set_failed")); });
   }
 
   // setModel calls the /set route to pin (a real model id) or clear
@@ -465,7 +561,12 @@ const panelHTMLTemplate = `<!doctype html>
       setModel(scope, authName, "auto");
       return;
     }
-    var wrapper = btn.closest(".model-edit");
+    // The kv-table's global-model row still wraps its input+buttons in one
+    // ".model-edit" span; the accounts table's per-account row now keeps
+    // the model input and the Save/Auto buttons in separate <td> cells of
+    // the same <tr> (see modelInputOnlyHTML/modelActionsHTML), so fall back
+    // to searching the whole row when there is no ".model-edit" ancestor.
+    var wrapper = btn.closest(".model-edit") || btn.closest("tr");
     var input = wrapper ? wrapper.querySelector(".model-input") : null;
     var model = input ? input.value.trim() : "";
     if (!model) {
@@ -473,6 +574,31 @@ const panelHTMLTemplate = `<!doctype html>
       return;
     }
     setModel(scope, authName, model);
+  });
+
+  // Event delegation for v0.4.0 file-mode account rows (fileRowHTML): one
+  // "Save" button per row commits the row's current enabled/time/model
+  // inputs together; "自动"/Auto next to the model field clears only the
+  // model (leaving enabled/time untouched).
+  document.addEventListener("click", function (event) {
+    var rowSaveBtn = event.target.closest(".row-save");
+    var rowAutoBtn = event.target.closest(".row-model-auto");
+    var btn = rowSaveBtn || rowAutoBtn;
+    if (!btn) { return; }
+    var row = btn.closest("tr[data-name]");
+    if (!row) { return; }
+    var name = row.getAttribute("data-name");
+    if (rowAutoBtn) {
+      setFileAccount(name, null, null, "auto");
+      return;
+    }
+    var enabledInput = row.querySelector(".row-enabled");
+    var timeInput = row.querySelector(".row-time");
+    var modelInput = row.querySelector(".row-model");
+    var enabled = enabledInput ? enabledInput.checked : null;
+    var timeVal = timeInput ? timeInput.value.trim() : null;
+    var modelVal = modelInput ? modelInput.value.trim() : "";
+    setFileAccount(name, enabled, timeVal, modelVal || "auto");
   });
 
   function renderRecent(recent) {
@@ -494,7 +620,7 @@ const panelHTMLTemplate = `<!doctype html>
         if (!res.ok) { showError(t("ui_load_failed")); return; }
         populateModelOptions(res.body.available_models);
         renderConfig(res.body.config);
-        renderAccounts(res.body.auths);
+        renderAccounts(res.body.auths, res.body.config && res.body.config.mode === "file");
         renderRecent(res.body.recent);
         var tick = res.body.last_tick ? res.body.last_tick : dash();
         var line = t("ui_label_last_tick") + ": " + esc(tick);

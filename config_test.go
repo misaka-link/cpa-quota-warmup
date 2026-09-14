@@ -8,19 +8,21 @@ import (
 	"time"
 )
 
-// TestDecodeConfigDefaults documents the v0.3.0 default: with no config at
-// all (no legacy-only key present), decodeConfig produces the new minimal
-// format's defaults, not the legacy ones -- timezone auto-follows the host
-// process (time.Local), accounts defaults to empty (warm up nothing), and
-// model defaults to "auto". See TestDecodeConfigLegacyDefaults below for the
-// old-format equivalent of this test.
+// TestDecodeConfigDefaults documents the v0.4.0 default: with no config at
+// all (no legacy-only key, no v0.3.0 top-level time/model/accounts key),
+// decodeConfig produces file mode -- timezone auto-follows the host process
+// (time.Local), and TimeRaw/Accounts/Model are left at their zero value
+// since file mode never reads them (the schedule lives in the externally
+// maintained quota-warmup.yaml instead, see warmupfile.go). See
+// TestDecodeConfigLegacyDefaults and TestDecodeConfigV3InlineDefaults below
+// for the other two shapes.
 func TestDecodeConfigDefaults(t *testing.T) {
 	cfg, err := decodeConfig(nil)
 	if err != nil {
 		t.Fatalf("decodeConfig(nil): %v", err)
 	}
-	if cfg.legacyMode {
-		t.Fatalf("expected an empty config to be treated as the new format")
+	if cfg.legacyMode || cfg.v3InlineMode {
+		t.Fatalf("expected an empty config to be treated as file mode, got legacyMode=%v v3InlineMode=%v", cfg.legacyMode, cfg.v3InlineMode)
 	}
 	if !cfg.Enabled || !cfg.Log {
 		t.Fatalf("expected enabled+log defaults true, got %+v", cfg)
@@ -34,17 +36,34 @@ func TestDecodeConfigDefaults(t *testing.T) {
 	if cfg.MaxTokens != defaultMaxTokens || cfg.MaxRounds != defaultMaxRounds || cfg.CatchUpMinutes != defaultCatchUpMinutes {
 		t.Fatalf("unexpected numeric defaults: %+v", cfg)
 	}
-	if len(cfg.TimeRaw) != 1 || cfg.TimeRaw[0] != defaultTime {
-		t.Fatalf("TimeRaw = %v, want [%s]", cfg.TimeRaw, defaultTime)
+	if len(cfg.TimeRaw) != 0 {
+		t.Fatalf("TimeRaw = %v, want empty in file mode", cfg.TimeRaw)
 	}
 	if len(cfg.Accounts) != 0 {
-		t.Fatalf("Accounts = %v, want empty (warm up nothing by default)", cfg.Accounts)
-	}
-	if cfg.Model.Scalar != "" || len(cfg.Model.Map) != 0 {
-		t.Fatalf("Model = %+v, want the zero value (auto)", cfg.Model)
+		t.Fatalf("Accounts = %v, want empty in file mode", cfg.Accounts)
 	}
 	if cfg.location == nil || cfg.location != timeLocalForTest(t) {
 		t.Fatalf("location = %v, want time.Local", cfg.location)
+	}
+}
+
+// TestDecodeConfigV3InlineDefaults documents the v0.3.0 top-level
+// time/model/accounts shape still working exactly as it did in v0.3.0
+// (detected as v3InlineMode, not file mode).
+func TestDecodeConfigV3InlineDefaults(t *testing.T) {
+	raw := lifecycleRequestJSON(t, []byte("time: \"05:30\"\naccounts: [\"*\"]\n"))
+	cfg, err := decodeConfig(raw)
+	if err != nil {
+		t.Fatalf("decodeConfig: %v", err)
+	}
+	if cfg.legacyMode {
+		t.Fatalf("expected v3InlineMode, not legacyMode")
+	}
+	if !cfg.v3InlineMode {
+		t.Fatalf("expected a top-level time/accounts config to be detected as v3InlineMode")
+	}
+	if len(cfg.TimeRaw) != 1 || cfg.TimeRaw[0] != "05:30" {
+		t.Fatalf("TimeRaw = %v, want [05:30]", cfg.TimeRaw)
 	}
 }
 

@@ -10,9 +10,7 @@ import sys
 
 BLOCK = """    cpa-quota-warmup:
       enabled: true
-      time: "05:30"                    # 每天几点预热：写 "05:30"，多个写 "05:30, 10:30"，或直接写 cron "30 5,10,15,20 * * *"
-      model: "auto"                    # 预热用的模型；auto = 自动选各 provider 最便宜的；也可直接写模型名，如 gpt-5.6-luna
-      accounts: ["codex-*-team.json"]  # 要预热的认证文件名，支持 * 通配；写 "*" 表示全部账号
+      # config-file: "quota-warmup.yaml"   # 可选，默认 <cwd>/quota-warmup.yaml（与 config.yaml 同目录）
 """
 
 path = next((a for a in sys.argv[1:] if not a.startswith('--')), '/var/lib/cli-proxy-api/config.yaml')

@@ -42,30 +42,22 @@ func TestOpsMergeConfigBlockParsesAsExpected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decodeConfig(ops/merge-config.py's BLOCK): %v\nyaml:\n%s", err, yamlDoc)
 	}
-	if cfg.legacyMode {
-		t.Fatalf("expected the shipped default config to use the new format")
+	// v0.4.0's shipped default is file mode: just `enabled: true` (plus a
+	// commented-out config-file example), no legacy or v3.0 inline keys.
+	if cfg.legacyMode || cfg.v3InlineMode {
+		t.Fatalf("expected the shipped default config to use file mode, got legacyMode=%v v3InlineMode=%v", cfg.legacyMode, cfg.v3InlineMode)
 	}
 	if !cfg.Enabled {
 		t.Fatalf("expected enabled: true")
 	}
-	if len(cfg.TimeRaw) != 1 || cfg.TimeRaw[0] != "05:30" {
-		t.Fatalf("TimeRaw = %v, want [05:30]", cfg.TimeRaw)
+	if cfg.ConfigFilePath != "" {
+		t.Fatalf("ConfigFilePath = %q, want empty (config-file is commented out, defaulting to <cwd>/quota-warmup.yaml)", cfg.ConfigFilePath)
 	}
-	if cfg.Model.Scalar != "auto" {
-		t.Fatalf("Model.Scalar = %q, want auto", cfg.Model.Scalar)
+	path, err := resolveWarmupFilePath(cfg)
+	if err != nil {
+		t.Fatalf("resolveWarmupFilePath: %v", err)
 	}
-	if len(cfg.Accounts) != 1 || cfg.Accounts[0].Match != "codex-*-team.json" {
-		t.Fatalf("Accounts = %+v, want a single codex-*-team.json glob", cfg.Accounts)
-	}
-
-	res := resolveNewAuth(cfg, modelOverrides{}, "codex-alice-team.json", "codex")
-	if !res.Selected {
-		t.Fatalf("expected the shipped config to select codex-*-team.json accounts")
-	}
-	if res.ModelSpec != "" || res.ModelSource != modelSourceAuto {
-		t.Fatalf("expected auto model selection, got spec=%q source=%q", res.ModelSpec, res.ModelSource)
-	}
-	if res.ReasoningEffort != codexReasoningEffort {
-		t.Fatalf("expected codex reasoning-effort=%q, got %q", codexReasoningEffort, res.ReasoningEffort)
+	if !strings.HasSuffix(path, string(os.PathSeparator)+warmupFileName) {
+		t.Fatalf("resolveWarmupFilePath = %q, want it to end in /%s", path, warmupFileName)
 	}
 }

@@ -131,7 +131,29 @@ func modelUnavailableWarning(l lang, t dueTarget) string {
 // resolveAutoModels, which must run after GET /v1/models has been
 // attempted, since the actual candidate can only be picked once the live
 // model list (or its absence) is known.
-func groupDueTargetsNew(entries []pluginapi.HostAuthFileEntry, cfg pluginConfig, ov modelOverrides, now time.Time, catchUp time.Duration, state *stateStore) (groups map[string][]dueTarget, invalidExprs []string) {
+func groupDueTargetsNew(entries []pluginapi.HostAuthFileEntry, cfg pluginConfig, ov modelOverrides, now time.Time, catchUp time.Duration, state *stateStore) (map[string][]dueTarget, []string) {
+	resolve := func(name, provider string) newAuthResolution { return resolveNewAuth(cfg, ov, name, provider) }
+	return groupDueTargetsFromResolver(entries, resolve, cfg.location, now, catchUp, state)
+}
+
+// groupDueTargetsFile is groupDueTargetsNew's v0.4.0 file-mode counterpart:
+// schedule/model resolution comes from the maintained quota-warmup.yaml
+// (resolveFileAuth in warmupfile.go) instead of cfg.Accounts/TimeRaw/Model.
+func groupDueTargetsFile(entries []pluginapi.HostAuthFileEntry, data warmupFileData, loc *time.Location, now time.Time, catchUp time.Duration, state *stateStore) (map[string][]dueTarget, []string) {
+	resolve := func(name, provider string) newAuthResolution { return resolveFileAuth(data, name, provider) }
+	return groupDueTargetsFromResolver(entries, resolve, loc, now, catchUp, state)
+}
+
+// groupDueTargetsFromResolver is the shared cron-evaluation/state-dedup
+// engine behind both groupDueTargetsNew (v3InlineMode) and
+// groupDueTargetsFile (v0.4.0 file mode): given a per-account resolver, walk
+// the host's auth list, evaluate each selected account's time expression(s)
+// against now, and return the due ones grouped by provider. A due target's
+// Model is left empty when its resolution tier was "auto" -- see
+// resolveAutoModels, which must run after GET /v1/models has been
+// attempted, since the actual candidate can only be picked once the live
+// model list (or its absence) is known.
+func groupDueTargetsFromResolver(entries []pluginapi.HostAuthFileEntry, resolve func(name, provider string) newAuthResolution, loc *time.Location, now time.Time, catchUp time.Duration, state *stateStore) (groups map[string][]dueTarget, invalidExprs []string) {
 	groups = make(map[string][]dueTarget)
 	seen := make(map[string]bool)
 	for _, entry := range entries {
@@ -142,7 +164,7 @@ func groupDueTargetsNew(entries []pluginapi.HostAuthFileEntry, cfg pluginConfig,
 		if name == "" {
 			continue
 		}
-		res := resolveNewAuth(cfg, ov, name, entry.Provider)
+		res := resolve(name, entry.Provider)
 		if !res.Selected {
 			continue
 		}
@@ -152,12 +174,12 @@ func groupDueTargetsNew(entries []pluginapi.HostAuthFileEntry, cfg pluginConfig,
 		}
 		provider := strings.ToLower(strings.TrimSpace(entry.Provider))
 		for _, expr := range exprs {
-			slot, due := expr.lastTriggerAtOrBefore(now, cfg.location, catchUp)
+			slot, due := expr.lastTriggerAtOrBefore(now, loc, catchUp)
 			if !due {
 				continue
 			}
 			hhmm := slot.Format("15:04")
-			dateKey := slotDateKey(slot, cfg.location)
+			dateKey := slotDateKey(slot, loc)
 			dedupKey := name + "|" + dateKey + "|" + hhmm
 			if seen[dedupKey] || state.isRecorded(name, dateKey, hhmm) {
 				continue
@@ -329,10 +351,14 @@ func waitForSessionCoverage(ring *usageRing, tags []string, wantAuthIDs map[stri
 // engine owns the background scheduler goroutine and everything it needs:
 // the live config, the usage ring, and the persisted schedule state.
 type engine struct {
-	settings   atomic.Pointer[pluginConfig]
-	ring       *usageRing
-	state      *stateStore
-	overrides  *overridesStore
+	settings  atomic.Pointer[pluginConfig]
+	ring      *usageRing
+	state     *stateStore
+	overrides *overridesStore
+	// warmupFile is non-nil only in v0.4.0 file mode (see
+	// pluginConfig.legacyMode/v3InlineMode): it owns the externally
+	// maintained quota-warmup.yaml. nil in legacy/v3InlineMode.
+	warmupFile *warmupFileManager
 	auths      authLister
 	newSender  func(baseURL, apiKey string) warmupClient
 	ctx        context.Context
@@ -429,10 +455,13 @@ func (e *engine) tick() {
 		return
 	}
 
-	if cfg.legacyMode {
+	switch {
+	case cfg.legacyMode:
 		e.tickLegacy(cfg, l, entries)
-	} else {
+	case cfg.v3InlineMode:
 		e.tickNew(cfg, l, entries)
+	default:
+		e.tickFile(cfg, l, entries)
 	}
 }
 
@@ -534,6 +563,44 @@ func (e *engine) tickNew(cfg pluginConfig, l lang, entries []pluginapi.HostAuthF
 			hostLog("warn", tr(l, msgInvalidTimeExpr, w))
 		}
 	}
+	e.runTickForGroups(cfg, l, now, groups)
+}
+
+// tickFile is the v0.4.0 file-mode scheduling flow: it keeps the maintained
+// quota-warmup.yaml in sync with the current host auth list (generating it
+// on first use, appending new accounts, annotating vanished ones), then
+// resolves due targets against whatever it last understood -- a parse
+// failure just now is logged but never clears the last-known-good schedule
+// (see warmupFileManager's doc comment), so a typo in the file can never
+// stop the scheduler.
+func (e *engine) tickFile(cfg pluginConfig, l lang, entries []pluginapi.HostAuthFileEntry) {
+	if e.warmupFile == nil {
+		return
+	}
+	if err := e.warmupFile.ensureFresh(entries); err != nil && cfg.Log {
+		hostLog("error", tr(l, msgWarmupFileError, e.warmupFile.path, err))
+	}
+	data, parseErr := e.warmupFile.snapshot()
+	if parseErr != "" && cfg.Log {
+		hostLog("error", tr(l, msgWarmupFileParseFailed, e.warmupFile.path, parseErr))
+	}
+
+	catchUp := time.Duration(cfg.CatchUpMinutes) * time.Minute
+	now := time.Now().In(cfg.location)
+	groups, invalidExprs := groupDueTargetsFile(entries, data, cfg.location, now, catchUp, e.state)
+	for _, w := range invalidExprs {
+		if cfg.Log {
+			hostLog("warn", tr(l, msgInvalidTimeExpr, w))
+		}
+	}
+	e.runTickForGroups(cfg, l, now, groups)
+}
+
+// runTickForGroups is the shared tail of tickNew and tickFile: it resolves
+// any still-"auto" models against a live GET /v1/models, prechecks explicit
+// ones, sends the sendable groups, and persists/logs every outcome
+// (including the ones dropped because of an unavailable model).
+func (e *engine) runTickForGroups(cfg pluginConfig, l lang, now time.Time, groups map[string][]dueTarget) {
 	if len(groups) == 0 {
 		return
 	}
@@ -625,10 +692,14 @@ type manualRunResult struct {
 // negotiate from.
 func (e *engine) manualTrigger(ctx context.Context, authGlob string, l lang) (manualRunResult, error) {
 	cfg := e.config()
-	if cfg.legacyMode {
+	switch {
+	case cfg.legacyMode:
 		return e.manualTriggerLegacy(ctx, cfg, authGlob, l)
+	case cfg.v3InlineMode:
+		return e.manualTriggerNew(ctx, cfg, authGlob, l)
+	default:
+		return e.manualTriggerFile(ctx, cfg, authGlob, l)
 	}
-	return e.manualTriggerNew(ctx, cfg, authGlob, l)
 }
 
 // manualTriggerLegacy is the pre-v0.3.0 manual-run flow, unchanged.
@@ -724,17 +795,51 @@ func (e *engine) manualTriggerLegacy(ctx context.Context, cfg pluginConfig, auth
 }
 
 // manualTriggerNew is the v0.3.0 manual-run flow: accounts[]/model
-// resolution (resolveNewAuth) instead of resolveAuthConfig, and the same
-// candidate-list auto-model-selection tickNew uses. The time-of-day gate is
-// irrelevant to a manual trigger either way -- both flows always fire
-// "now" -- so no cron evaluation is needed here.
+// resolution (resolveNewAuth) instead of resolveAuthConfig, delegating to
+// the shared runManualTrigger for everything after that.
 func (e *engine) manualTriggerNew(ctx context.Context, cfg pluginConfig, authGlob string, l lang) (manualRunResult, error) {
 	entries, err := e.auths.ListAuths()
 	if err != nil {
 		return manualRunResult{}, fmt.Errorf("host.auth.list: %w", err)
 	}
 	ov := e.overridesSnapshot()
+	resolve := func(name, provider string) newAuthResolution { return resolveNewAuth(cfg, ov, name, provider) }
+	return e.runManualTrigger(ctx, cfg, l, authGlob, entries, resolve)
+}
 
+// manualTriggerFile is the v0.4.0 file-mode manual-run flow: schedule/model
+// resolution comes from the maintained quota-warmup.yaml (resolveFileAuth)
+// instead of cfg.Accounts/TimeRaw/Model. It refreshes the file first (same
+// as tickFile) so a manual "warm up now" click always sees the latest
+// on-disk edits, including ones just saved through the panel's /set route.
+func (e *engine) manualTriggerFile(ctx context.Context, cfg pluginConfig, authGlob string, l lang) (manualRunResult, error) {
+	entries, err := e.auths.ListAuths()
+	if err != nil {
+		return manualRunResult{}, fmt.Errorf("host.auth.list: %w", err)
+	}
+	var data warmupFileData
+	if e.warmupFile != nil {
+		if err := e.warmupFile.ensureFresh(entries); err != nil && cfg.Log {
+			hostLog("error", tr(l, msgWarmupFileError, e.warmupFile.path, err))
+		}
+		var parseErr string
+		data, parseErr = e.warmupFile.snapshot()
+		if parseErr != "" && cfg.Log {
+			hostLog("error", tr(l, msgWarmupFileParseFailed, e.warmupFile.path, parseErr))
+		}
+	}
+	resolve := func(name, provider string) newAuthResolution { return resolveFileAuth(data, name, provider) }
+	return e.runManualTrigger(ctx, cfg, l, authGlob, entries, resolve)
+}
+
+// runManualTrigger is the shared tail of manualTriggerNew and
+// manualTriggerFile: given a per-account resolver, fire an immediate,
+// out-of-schedule warmup for every enabled+selected auth matching authGlob
+// (empty matches all), ignoring the time-of-day gate but still honoring
+// each auth's 60-second manual-trigger cooldown. It does not touch the
+// persisted schedule state: a manual run is deliberately independent of
+// whether today's real slot has already fired.
+func (e *engine) runManualTrigger(ctx context.Context, cfg pluginConfig, l lang, authGlob string, entries []pluginapi.HostAuthFileEntry, resolve func(name, provider string) newAuthResolution) (manualRunResult, error) {
 	result := manualRunResult{Lang: string(l), Skipped: map[string]string{}, Outcomes: map[string]roundOutcome{}}
 	groups := make(map[string][]dueTarget)
 	targetByName := make(map[string]dueTarget)
@@ -750,7 +855,7 @@ func (e *engine) manualTriggerNew(ctx context.Context, cfg pluginConfig, authGlo
 			result.Skipped[name] = tr(l, msgSkippedDisabled)
 			continue
 		}
-		res := resolveNewAuth(cfg, ov, name, entry.Provider)
+		res := resolve(name, entry.Provider)
 		if !res.Selected {
 			result.Skipped[name] = tr(l, msgSkippedNoModel)
 			continue

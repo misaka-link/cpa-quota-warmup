@@ -2,7 +2,7 @@
 
 ## English summary
 
-`cpa-quota-warmup` is a native plugin (Go, cgo `c-shared`) for [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) (CPA). At a scheduled time of day it sends a tiny chat-completion request (`"hi"`, `max_tokens: 16`) to each configured account, using the cheapest model that provider currently exposes, to warm up the account's 5-hour quota window before the first real request of the day hits it cold. It needs no credentials of its own: it authenticates as an ordinary client using CPA's own configured `api-keys`.
+`cpa-quota-warmup` is a native plugin (Go, cgo `c-shared`) for [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) (CPA). At a scheduled time of day it sends a tiny chat-completion request (`"hi"`, `max_tokens: 16`) to each enabled account, using the cheapest model that provider currently exposes, to warm up the account's 5-hour quota window before the first real request of the day hits it cold. It needs no credentials of its own: it authenticates as an ordinary client using CPA's own configured `api-keys`.
 
 ### Install
 
@@ -10,27 +10,28 @@
 - **From source**: `CGO_ENABLED=1 scripts/build.sh` (requires Go 1.26+). This plugin is built against `github.com/router-for-me/CLIProxyAPI/v7` SDK `v7.2.158` (see `go.mod`) and targets the CPA `7.2.15x` host line.
 - `ops/deploy` and `ops/merge-config.py` are convenience scripts written for the maintainer's own local systemd deployment (they assume a `cli-proxy-api.service` and `/var/lib/cli-proxy-api/...` paths); treat them as examples and adjust the paths for your own setup, or configure/install by hand instead.
 
-Minimal config (v0.3.0+; see "快速开始" below for the annotated Chinese version and "旧版配置格式" for the pre-v0.3.0 shape, which still works unchanged):
+Two-step quick start (v0.4.0+):
 
-```yaml
-plugins:
-  configs:
-    cpa-quota-warmup:
-      enabled: true
-      time: "05:30"                    # what time(s) of day to warm up; also accepts cron
-      model: "auto"                    # "auto" picks the cheapest available model per provider
-      accounts: ["codex-*-team.json"]  # glob(s) against auth file names; "*" = every account
-```
+1. Add this to `config.yaml` and restart CPA once:
+   ```yaml
+   plugins:
+     configs:
+       cpa-quota-warmup:
+         enabled: true
+   ```
+2. The plugin generates `quota-warmup.yaml` next to `config.yaml` on its own, with one disabled section per credential file it finds. Open it, flip `enabled: false` to `enabled: true` for the accounts you want warmed up, and save -- no restart needed, the plugin picks it up within 30 seconds. Or do the same thing from the status panel (checkbox + Save button per row), described below.
 
-Everything else (timezone, base URL, api-key, message, rounds, per-provider model overrides, ...) is optional and auto-defaulted, or can be set under an `advanced:` block -- see "高级设置（一般不用改）" below. Timezone defaults to the host process's own local timezone; no configuration needed. The status/config panel also supports picking a model per account (or globally) from a live `GET /v1/models` list, or typing one in freely.
+Everything else -- timezone, base URL, api-key, message, rounds, ... -- is optional and auto-defaulted, or can be set under `config.yaml`'s `advanced:` block; see "高级设置（一般不用改）" below. Timezone defaults to the host process's own local timezone; no configuration needed.
 
 Status/config panel (self-contained HTML, no external assets, follows the CPA Management Center's own theme and language): `GET /v0/resource/plugins/cpa-quota-warmup/panel`.
+
+Configs that still set the pre-v0.4.0 top-level `time`/`model`/`accounts` (v0.3.0) or `default`/`providers`/`auths` (v0.1.0/v0.2.0) keys keep working exactly as before -- see "旧版配置格式（仍然支持）" below -- no `quota-warmup.yaml` is generated for those.
 
 **Limitation, in one sentence**: the plugin cannot pin a request to a specific account (CPA gives plugins no such hook), so it can only fan requests out round-robin and reconcile coverage after the fact via usage records -- see "覆盖策略的局限" below for the full explanation (in Chinese; the rest of this document is Chinese-first).
 
 ---
 
-CLIProxyAPI (CPA) 原生插件（Go c-shared 库）。每天在配置的时间点，给配置里指定的每个账号发一条极短消息（默认 `"hi"`，`max_tokens: 16`），模型默认自动选该账号所属 provider 当前最便宜的一个，预热该账号的 5 小时额度窗口，避免第一次真实请求撞上"冷启动"配额检查。
+CLIProxyAPI (CPA) 原生插件（Go c-shared 库）。每天在配置的时间点，给启用的每个账号发一条极短消息（默认 `"hi"`，`max_tokens: 16`），模型默认自动选该账号所属 provider 当前最便宜的一个，预热该账号的 5 小时额度窗口，避免第一次真实请求撞上"冷启动"配额检查。
 
 插件本身**不需要，也没有**任何私有凭据或密钥：它就是本机 CPA 的一个普通客户端，用 `api-keys[0]`（或显式配置的 `api-key`）向自己的 `/v1/chat/completions` 发请求。
 
@@ -38,25 +39,50 @@ CLIProxyAPI (CPA) 原生插件（Go c-shared 库）。每天在配置的时间�
 
 ## 快速开始
 
-`plugins.configs.cpa-quota-warmup` 只需要 4 行（`model` 不写就是 `"auto"`，其实 3 行也够）：
+两步：
+
+1. `config.yaml` 里只需要这 1 行，加上后重启一次 CPA：
+
+   ```yaml
+   plugins:
+     configs:
+       cpa-quota-warmup:
+         enabled: true
+         # config-file: "quota-warmup.yaml"   # 可选，默认 <cwd>/quota-warmup.yaml（与 config.yaml 同目录）
+   ```
+
+2. 插件会在 `config.yaml` 同目录下**自动生成并维护** `quota-warmup.yaml`，每个认证文件一段、默认全部 `enabled: false`。打开这个文件，把要预热的账号改成 `enabled: true`，保存——**不用重启**，插件 30 秒内的下一次 tick 就会读到；也可以不手动改文件，直接在状态面板的账号表里勾选「启用」、按需改时间/模型，点「保存」，效果一样（面板顶部会显示这个文件的完整路径）。
+
+## `quota-warmup.yaml` 详解
+
+首次生成的样子（下面这份注释、缩进、`# provider: xxx` 行尾注释都是插件自动写的）：
 
 ```yaml
-plugins:
-  configs:
-    cpa-quota-warmup:
-      enabled: true
-      time: "05:30"                    # 每天几点预热：写 "05:30"，多个写 "05:30, 10:30"，或直接写 cron "30 5,10,15,20 * * *"
-      model: "auto"                    # 预热用的模型；auto = 自动选各 provider 最便宜的；也可直接写模型名，如 gpt-5.6-luna
-      accounts: ["codex-*-team.json"]  # 要预热的认证文件名，支持 * 通配；写 "*" 表示全部账号
+# cpa-quota-warmup 预热配置：每个认证文件一段，改 enabled / time / model 即可，保存后自动生效（无需重启）
+# time：写 "05:30"，多个写 "05:30, 10:30"，或 cron "30 5,10,15,20 * * *"
+# model：auto = 自动选该 provider 最便宜的；也可写具体模型名（见 GET /v1/models）
+defaults:
+  time: "05:30"
+  model: auto
+accounts:
+  antigravity-alice@example.com.json:      # provider: antigravity
+    enabled: false
+    time: "05:30"
+    model: auto
+  codex-xxxx-alice@example.com-team.json:  # provider: codex
+    enabled: false
+    time: "05:30"
+    model: auto
 ```
 
-- `time`：字符串或列表都行，逗号分隔的字符串（`"05:30, 10:30"`）会自动拆开；也可以直接写标准 5 段 cron 表达式（`分 时 日 月 周`），比如 `"30 5,10,15,20 * * *"` 表示每天 05:30/10:30/15:30/20:30，`"0 */5 * * *"` 表示每 5 小时整点。HH:MM 和 cron 可以在列表里混着写。
-- `model`：默认 `"auto"`，按下面"自动选择模型"的候选表，从这台 CPA 实例 `GET /v1/models` 实际列出的模型里挑最便宜的一个；也可以直接写死一个模型名（对所有账号生效，除非被账号自己的 `model` 覆盖）；还可以写成 `{codex: "gpt-5.6-luna", kimi: "kimi-k2.8"}` 这种按 provider 的映射（等价于 `advanced.models`，图省事可以都写在这一个字段里）。
-- `accounts`：账号文件名的 glob 列表（对应 `host.auth.list` 的 `name` 字段），支持 `*`/`?`/`[]`；写 `accounts: "*"` 表示全部账号。**不写或写成空列表 = 不预热任何账号**，这个情况会在 `status`/面板和日志里明确提示，不会静默什么都不做。
+- `defaults:` 是没有单独设置的账号段所继承的时间/模型；改这两行会影响所有仍留空/等于默认值的账号。
+- 每个账号段的字段都可以省略：不写 `time`/`model` 就用 `defaults:` 的值；不写 `enabled` 视为 `false`（新账号默认不预热，要手动打开）。也支持按账号覆盖 `message`、`max_tokens`（可选，不写就用 `config.yaml` 里 `advanced:` 的值）。
+- `time` 的写法与顶层一致：`"05:30"`、逗号分隔的 `"05:30, 10:30"`，或标准 5 段 cron `"30 5,10,15,20 * * *"`。
+- `model` 默认 `auto`：按内置的"从便宜到贵"候选表，从这台 CPA 实例 `GET /v1/models` 实际列出的模型里挑第一个；`GET /v1/models` 请求不到时退回候选表第一个（见下表）；也可以直接写死一个具体模型名。`codex` 会自动带上 `reasoning_effort: "low"`。
+- **这份文件插件会持续维护，但绝不删除你写的内容**：`host.auth.list` 里新出现的认证文件，插件会追加一段（默认禁用）；消失的认证文件，插件会在那一行行尾追加 `# 认证文件不存在` 提示（账号段本身原样保留，你的设置不会丢，账号回来后这条提示会自动去掉）；你自己写的注释、值、格式都不会被覆盖或重排——插件是在 YAML 的语法树（`yaml.v3` 的 Node）级别做增量编辑，不是整份重新生成。只有真的有变化（新增/标注/取消标注）才会重写文件（原子写：临时文件 + `rename`）。
+- **热加载**：每次 tick（30 秒一次）都会检查这个文件的 mtime，变了就重新解析；**解析失败**（比如手滑改出语法错误）不会影响调度——继续沿用上一次解析成功的配置，同时打一行 `host.log`（四语言）并在 `status`/面板上显示这个错误，绝不会因为一个 YAML 语法错误就整个停摆。
 
-### 自动选择模型（`model: "auto"` 时）
-
-每个 provider 有一份内置的"从便宜到贵"候选模型表，插件会用同一个 `GET /v1/models` 从表里找第一个这台实例实际暴露的模型；如果 `GET /v1/models` 本身请求不到（网络问题等），就直接退回表里第一个（不会因为拿不到列表就不预热了）。`codex` 会自动带上 `reasoning_effort: "low"`。选中的结果会显示在状态页/面板上（例如"自动选择：gpt-5.6-luna"）。
+### 自动选择模型（`model: auto` 时）候选表
 
 | provider | 候选表（从便宜到贵） |
 | --- | --- |
@@ -67,27 +93,17 @@ plugins:
 | `claude` | claude-3-5-haiku-20241022, claude-haiku-4-5-20251001, claude-sonnet-4-6 |
 | `gemini-cli` / `aistudio` / `vertex` | gemini-2.5-flash-lite, gemini-2.5-flash, gemini-3.1-flash-lite-preview, gemini-3-flash-preview, gemini-3.5-flash-lite, gemini-3.5-flash |
 
-模型的最终优先级（从高到低）：**面板上手动设置** > `accounts[]` 里该账号自己的 `model` > 顶层 `model`（非 `auto` 时） > `advanced.models[provider]`（或顶层 `model` 的映射写法） > 自动选择。任何一层给出的模型，只要 `GET /v1/models` 能拿到列表且该模型不在里面，都会按现有的"预检"逻辑跳过并 `warn`，不会对着一个不存在的模型硬发。
-
-## 按账号单独设置
-
-`accounts:` 的列表项除了纯字符串（glob），也可以写成对象，给单个账号单独设一个时间/模型，不受顶层 `time`/`model` 影响：
-
-```yaml
-      accounts:
-        - "codex-*-team.json"                 # 用顶层 time/model
-        - match: "antigravity-alice.json"     # 单独覆盖
-          time: "05:30, 10:30"
-          model: "gemini-3.7-flash-high"
-```
-
-`match` 是必填的 glob；`time`/`model` 不写就沿用顶层的值。同一账号被多条命中时，**列表里靠后的条目覆盖靠前的**。
+只要 `GET /v1/models` 能拿到列表、且这个账号最终解析出的模型（无论来自账号段还是 `defaults:`）不在这个列表里，都会按现有的"预检"逻辑跳过并 `warn`，不会对着一个不存在的模型硬发。
 
 ## 高级设置（一般不用改）
 
-以下全部是可选项，缺省即可正常工作，放在 `advanced:` 一个块里：
+以下全部是可选项，缺省即可正常工作，写在 **`config.yaml`**（不是 `quota-warmup.yaml`）的 `advanced:` 一个块里，新旧两种配置模式下都从这里读：
 
 ```yaml
+plugins:
+  configs:
+    cpa-quota-warmup:
+      enabled: true
       advanced:
         timezone: ""              # 留空 = 自动跟随宿主进程本地时区；也可以填 IANA 时区名手动覆盖
         base-url: "http://127.0.0.1:8317"
@@ -98,19 +114,48 @@ plugins:
         catch-up-minutes: 60
         language: "auto"           # auto/zh-CN/zh-TW/en/ru
         log: true
-        models:                    # 按 provider 覆盖模型，等价于顶层 model 写成映射
-          codex: "gpt-5.6-luna"
-          kimi: "kimi-k2.8"
 ```
 
 `priority`（插件加载优先级）是 CPA 通用的顶层键，不属于这个插件自己的配置，仍然写在最外层（`plugins.configs.cpa-quota-warmup.priority`），不放进 `advanced:`。
 
 ## 旧版配置格式（仍然支持）
 
-v0.2.x 及更早版本的 `default:`/`providers:`/`auths:`/`timezone:`/`base-url:`/... 这些顶层键，原样保留，行为与之前完全一致，不需要迁移。`plugin.register` 时如果检测到这类旧键，会打一行 `host.log` 提示"检测到旧版配置格式，建议改为 time/accounts 写法"，仅提示、不影响运行。两种写法描述同一个意图时解析出的结果是等价的（`config_new_format_test.go` 里的 `TestDecodeConfigOldAndNewFormatsAreEquivalent` 覆盖了这一点）。
+`config.yaml` 里只要还留着下面任意一类顶层键，插件就继续按"内联模式"工作——**不会**生成/接管 `quota-warmup.yaml`，`status`/面板里 `mode` 字段会显示 `inline`（新默认的独立文件模式是 `file`）：
+
+- **v0.1.0/v0.2.0**：`default:`/`providers:`/`auths:`/`timezone:`/`base-url:`/`api-key:`/`message:`/`max-tokens:`/`max-rounds:`/`catch-up-minutes:` 这些顶层键，行为与之前完全一致。
+- **v0.3.0**：顶层 `time:`/`model:`/`accounts:`，行为与 v0.3.0 完全一致，包括 `accounts:` 列表项可以写成 `{match, time, model}` 对象覆盖单个账号、面板上按 `panel > account > global > provider > auto` 优先级手动设置模型（仍然存在 `overrides.json` 里，不受 v0.4.0 影响）。
+
+两类都不需要迁移，检测到时 `plugin.register` 会打一行 `host.log` 提示可以删掉这些顶层键、只保留 `enabled: true` 来迁移到独立文件模式（仅提示，不影响运行）。v0.1.0 及更早的旧格式，面板不支持保存设置（`/set` 返回 501）；v0.3.0 内联模式的面板保存行为不变。
+
+`config.yaml` 与 v0.3.0-inline 的 `quota-warmup.yaml`（v0.4.0 独立文件）两种意图等价时解析结果一致，`config_new_format_test.go` 的 `TestDecodeConfigOldAndNewFormatsAreEquivalent` 覆盖了 v0.1/v0.2 与 v0.3 之间的等价性。
 
 <details>
-<summary>旧版字段详解（点击展开）</summary>
+<summary>v0.3.0 内联写法详解（点击展开）</summary>
+
+```yaml
+plugins:
+  configs:
+    cpa-quota-warmup:
+      enabled: true
+      time: "05:30"                    # 每天几点预热；也支持 cron
+      model: "auto"                    # auto/具体模型名/{provider: model} 映射
+      accounts:
+        - "codex-*-team.json"                 # 用顶层 time/model
+        - match: "antigravity-alice.json"     # 单独覆盖
+          time: "05:30, 10:35"
+          model: "gemini-3.7-flash-high"
+      advanced:
+        models:                    # 按 provider 覆盖模型，等价于顶层 model 写成映射
+          codex: "gpt-5.6-luna"
+          kimi: "kimi-k2.8"
+```
+
+`accounts:` 支持纯字符串（glob，`"*"` 表示全部账号）或 `{match, time, model}` 对象；`match` 必填，`time`/`model` 不写就沿用顶层的值，同一账号被多条命中时列表里靠后的覆盖靠前的。**不写或写成空列表 = 不预热任何账号**，会在 `status`/面板和日志里明确提示。
+
+</details>
+
+<details>
+<summary>v0.1.0/v0.2.0 字段详解（点击展开）</summary>
 
 ```yaml
 plugins:
@@ -156,11 +201,11 @@ plugins:
 
 ## 机制
 
-1. 后台每 30 秒 tick 一次。每次 tick 都重新调用 `host.auth.list` 拿最新认证文件列表（增删账号即时生效）。新格式下，对每个账号先看是否被 `accounts[]` 里某条 glob 命中（命中即选中，账号自己的 `time`/`model` 覆盖顶层的）；旧格式下走原来的 `default:` → `providers.<provider>:` → `auths[]` 顺序覆盖。
+1. 后台每 30 秒 tick 一次。每次 tick 都重新调用 `host.auth.list` 拿最新认证文件列表（增删账号即时生效）。**文件模式**（v0.4.0 默认）下：先确保 `quota-warmup.yaml` 存在并已经和当前认证文件列表对齐（新增/标注消失，见上），再看每个账号自己是否 `enabled: true`；**v0.3.0 内联模式**下：看是否被顶层 `accounts[]` 里某条 glob 命中；**v0.1.0/v0.2.0 内联模式**下：走 `default:` → `providers.<provider>:` → `auths[]` 顺序覆盖。三种模式的判定逻辑相互独立，一份配置只会命中其中一种（判定顺序：先查旧版顶层键，再查 v0.3.0 顶层键，都没有就是文件模式）。
 2. 对每个账号的每个时间表达式（HH:MM 或 cron），计算"上一个应该触发的时刻"：若 `now` 已经过了这个时刻、且 `now - 该时刻 <= catch-up-minutes`、且状态文件里还没有这个 `(账号, 日期, HH:MM)` 的记录 → 判定为"到期"（cron 的匹配用标准 5 段字段 `分 时 日 月 周`，`*`/`*/n`/`a,b`/`a-b`/`a-b/n` 五种写法都支持，五个字段之间用简单 AND 逻辑，不做 vixie-cron 里"日期与星期都限定时取 OR"那个特例）。
-3. **模型解析**：新格式下，若这个账号最终解析出的是"自动"档位，用同一 api-key 对本机 `GET /v1/models` 取一次 `data[].id` 集合，从该 provider 的内置候选表里选第一个出现在集合里的；`GET /v1/models` 本身请求失败就直接用候选表第一个。若是显式指定的模型（面板/账号/顶层/`advanced.models` 四层里任意一层给出的），同样对着这次 `GET /v1/models` 结果核对，不在里面就跳过（不发请求）并记 `warn`；这次 `GET /v1/models` 本身失败（网络问题等）就跳过预检、照常发送，不能因为预检失败反而拦住本该发出去的请求。
+3. **模型解析**：若这个账号最终解析出的是"自动"档位（文件模式：账号段和 `defaults:` 都没写具体模型，或写的是 `auto`），用同一 api-key 对本机 `GET /v1/models` 取一次 `data[].id` 集合，从该 provider 的内置候选表里选第一个出现在集合里的；`GET /v1/models` 本身请求失败就直接用候选表第一个。若是显式指定的模型，同样对着这次 `GET /v1/models` 结果核对，不在里面就跳过（不发请求）并记 `warn`；这次 `GET /v1/models` 本身失败（网络问题等）就跳过预检、照常发送，不能因为预检失败反而拦住本该发出去的请求。
 4. 到期且通过预检的账号按 provider 分组。每组内，"顺序"（不是并发）发送 N 条请求（N = 该组待预热账号数），每条请求带一个全新随机的 `X-Session-ID` 头；在最多 3 秒的窗口内持续收集这一轮所有请求标记下的**全部** `usage.handle` 记录（不是只看第一条），直到组内每个目标账号的 `AuthID` 都出现过、或者窗口到期。**同一个 `X-Session-ID` 标记下可能对应不止一条 usage 记录**：宿主可能在同一个客户端请求内部先打到 A 账号 429，再重试打到 B 账号成功，两条记录共享同一个 `SessionID`——只看"这个标记下最新一条"会把 A 账号的 429 直接吞掉。失败（429/其他）的记录照样算"覆盖"，账号的额度检查窗口已经被真实触碰过。仍未覆盖的账号进入下一轮，最多 `max-rounds`（默认 3）轮；轮次用尽仍未覆盖的账号记一条 `warn` 日志，但**这一天这个时间点视为已处理**，不会在同一天的 catch-up 窗口内反复重试。
-5. 结果（是否覆盖、用了几轮、状态码、警告信息）持久化到 `<CPA 工作目录>/quota-warmup/state.json`（原子写：临时文件 + `rename`，这是插件自己的文件，不是 `config.yaml`，可以放心用 rename），只保留最近 7 天。面板上手动设置的模型覆盖存在同目录下的 `overrides.json`，同样是原子写，`reconfigure`/重启后仍然有效。
+5. 结果（是否覆盖、用了几轮、状态码、警告信息）持久化到 `<CPA 工作目录>/quota-warmup/state.json`（原子写：临时文件 + `rename`，这是插件自己的文件，不是 `config.yaml`，可以放心用 rename），只保留最近 7 天。v0.3.0 内联模式下面板手动设置的模型覆盖存在同目录下的 `overrides.json`（原子写，`reconfigure`/重启后依然有效）；文件模式下面板的保存直接写回 `quota-warmup.yaml`，不再用 `overrides.json`（若从 v0.3.0 升级时该文件还在，首次启动会把其中的模型覆盖并入新文件后把它改名为 `overrides.json.migrated`，见"面板与模型选择"）。
 
 ## 为什么不用 `host.model.execute`
 
@@ -176,24 +221,25 @@ plugins:
 
 ## 面板与模型选择
 
-状态页面（`GET .../panel`）的"模型"列既能从下拉列表选、也能直接手打：
+状态页面（`GET .../panel`）顶部会显示当前模式（`file`/`inline`）与 `quota-warmup.yaml` 的完整路径（文件模式下）。账号表每一行都能直接编辑：
 
-- 每个账号一行，模型格子是一个 `<input list=...>` + 下拉数据源（来自 `status` JSON 的 `available_models`，按 `owned_by` 分组），配一个"保存"和一个"自动"按钮；配置摘要区还有一个全局模型的同款输入框。
-- 点"保存"会调 `GET .../set?scope=auth&auth=<name>&model=<id>`（全局是 `scope=global`，不带 `auth`），写到 `<CPA 工作目录>/quota-warmup/overrides.json`（原子写），`reconfigure`/重启后依然生效；点"自动"等价于 `model=auto`，效果是**删除**这条覆盖（不是把字符串 `"auto"` 存进去），恢复自动选择。
-- 校验：`model` 不是 `auto` 时必须出现在这次 `GET /v1/models` 的结果里，否则 400 并返回四语言错误信息；这次预检本身请求失败（网络问题等）会放行保存，但返回一条 `warning`。
-- `status` JSON 的每个账号都带 `model_source`，标出这个模型是从哪一层来的：`panel`（面板手动设置）> `account`（`accounts[]` 对象里的 `model`）> `global`（顶层 `model`）> `provider`（`advanced.models`）> `auto`（自动选择），优先级从高到低正是这个顺序。
+- **文件模式**（v0.4.0 默认）：每行有「启用」勾选框、可编辑的「时间」输入框、模型格子（`<input list=...>` + 下拉数据源，来自 `status` JSON 的 `available_models`，按 `owned_by` 分组，也能直接手打）+「自动」按钮，还有一个「保存」按钮一次性提交这一行的启用/时间/模型三项。点「保存」调 `GET .../set?auth=<name>&enabled=<bool>&time=<...>&model=<id|auto>`（只传的字段会被写回 `quota-warmup.yaml` 对应账号段，Node 级编辑，注释不丢），点模型旁边的「自动」只会单独把 `model` 设成 `auto`、不动其他字段。
+- **v0.3.0 内联模式**（顶层写了 `time`/`model`/`accounts` 时）：模型列同 v0.3.0——面板/账号/顶层/`advanced.models` 四层优先级，`model_source` 标出来源，点「保存」调 `GET .../set?scope=global|auth&auth=<name>&model=<id|auto>`，存在 `overrides.json` 里，`model=auto` 是**删除**这条覆盖，不是存字面量。
+- **v0.1.0/v0.2.0 内联模式**：`/set` 直接返回 501，面板上没有可保存的编辑控件（这个格式本来就没有"面板覆盖"这一层）。
+- 模型校验规则两种模式一致：`model` 不是 `auto` 时必须出现在这次 `GET /v1/models` 的结果里，否则 400 并返回四语言错误信息；预检本身请求失败（网络问题等）会放行保存，但返回一条 `warning`。
+- **从 v0.3.0 升级**：如果你之前在 v0.3.0 内联模式下用过面板设置过模型（`overrides.json` 里有内容），现在把 `config.yaml` 简化成只剩 `enabled: true` 切到文件模式后，插件第一次启动会自动把 `overrides.json` 里的模型覆盖合并进新生成的 `quota-warmup.yaml`（按账号覆盖合并进对应账号段的 `model`；全局覆盖合并进 `defaults.model`），然后把 `overrides.json` 改名成 `overrides.json.migrated`，只做这一次。**这一步只迁移模型**，不会把之前"哪些账号被启用"的状态带过来——迁移后请手动确认 `quota-warmup.yaml` 里对应账号的 `enabled` 字段。
 
 ## 部署
 
 ```bash
 cd ~/cpa-plugins/cpa-quota-warmup
-scripts/build.sh                 # -> dist/cpa-quota-warmup-v0.3.0.so (+ .sha256)
+scripts/build.sh                 # -> dist/cpa-quota-warmup-v0.4.1.so (+ .sha256)
 sudo ops/merge-config.py         # 原地合并默认配置到 /var/lib/cli-proxy-api/config.yaml（保 inode）
                                   # sudo ops/merge-config.py --remove 可移除
 sudo ops/deploy                  # 安装 .so 到插件目录并重启 cli-proxy-api.service
 ```
 
-`ops/merge-config.py` 写入的默认配置就是"快速开始"里那 4 行。修改前会先按插件 id 做正则查找替换已有块，重复执行是幂等的。
+`ops/merge-config.py` 写入的默认配置就是"快速开始"第一步那 1 行（`enabled: true`，外加一行注释掉的 `config-file` 示例）。修改前会先按插件 id 做正则查找替换已有块，重复执行是幂等的。
 
 **`ops/deploy` 与 `ops/merge-config.py` 是针对维护者本机 systemd 部署（`cli-proxy-api.service`、`/var/lib/cli-proxy-api/...`）写的辅助脚本**，不是通用安装程序；换一套部署方式（Docker、不同路径、不同服务名等）时请照着改脚本里的路径/服务名，或者干脆手动完成"放 `.so`、改 `config.yaml`、重启 CPA"这三步。
 
@@ -204,7 +250,7 @@ sudo ops/deploy                  # 安装 .so 到插件目录并重启 cli-proxy
 go vet ./... && go test ./...
 
 # 2. 真 ABI 集成测试（不需要真实宿主/网络）
-python3 integration_abi_test.py dist/cpa-quota-warmup-v0.3.0.so
+python3 integration_abi_test.py dist/cpa-quota-warmup-v0.4.1.so
 
 # 3. 部署后看宿主日志（host.log 回调，前缀 [cpa-quota-warmup]）
 journalctl -u cli-proxy-api | rg 'cpa-quota-warmup'
@@ -218,8 +264,8 @@ curl -s 'http://127.0.0.1:8317/v0/resource/plugins/cpa-quota-warmup/status?lang=
 # 6. 立即手动触发一轮（GET，见下方"宿主事实核实"里为什么不是 POST）
 curl -s 'http://127.0.0.1:8317/v0/resource/plugins/cpa-quota-warmup/run?auth=antigravity-*' | jq .
 
-# 7. 在面板上把某个账号的模型手动改一下（等价调用，GET）
-curl -s 'http://127.0.0.1:8317/v0/resource/plugins/cpa-quota-warmup/set?scope=auth&auth=antigravity-alice.json&model=gemini-3.7-flash-high' | jq .
+# 7. 文件模式：直接编辑 quota-warmup.yaml 打开某个账号，或者用面板/命令行等效调用（GET）
+curl -s 'http://127.0.0.1:8317/v0/resource/plugins/cpa-quota-warmup/set?auth=antigravity-alice.json&enabled=true&model=gemini-3.7-flash-high' | jq .
 
 # 8. cpa-usage-panel 里应该能看到这些请求（provider=对应 provider，model=配置的模型，
 #    时间落在计划的 HH:MM 附近），确认预热请求确实打到了上游而不是本地短路
@@ -260,7 +306,11 @@ curl -s 'http://127.0.0.1:8317/v0/resource/plugins/cpa-quota-warmup/set?scope=au
 - **cron 的日期/星期字段用简单 AND 逻辑**，不是 vixie-cron 那种"日期与星期都限定时取 OR"的特例；这个插件的场景就是"每天/每隔几小时的固定时间点"，不需要那种特例，属于本次改动的刻意简化，已在 `cron_test.go` 里覆盖 `*`、`*/n`、`a,b`、`a-b`、星期几这几种写法。
 - **顶层 `model`/`advanced.models` 的可用性校验只看这个模型是否出现在 `GET /v1/models` 里，不再进一步核实它是否"属于"某个账号的 provider**（`/v1/models` 的 `owned_by` 字段目前只用于面板下拉框的分组展示，插件没有其他可靠的"模型 ↔ provider 归属"数据源）；配错了不会立刻报错，只会在实际发送时可能因为账号/provider 不匹配而失败，这是本次改动里对一个不够明确的校验要求做的最小合理简化。
 - **面板"模型来源"里 `panel`（面板覆盖）这一档，`scope=global` 和 `scope=auth` 两种面板覆盖用的是同一个优先级**（都在"账号对象 `model`"之上），这是协调方给出的优先级列表（`panel > account > global > provider > auto`）里没有进一步区分两种 panel 覆盖相对顺序时，本插件自己采用的最直接读法。
-- `overrides.json`（面板模型覆盖）和 `state.json` 一样按进程当前工作目录解析路径，不随 `config.yaml` 走；两份文件都不会被 CPA 自身的热重载 watcher 监视。
+- `overrides.json`（v0.3.0 内联模式面板模型覆盖）和 `state.json`/`quota-warmup.yaml`（默认路径时）一样按进程当前工作目录解析路径，不随 `config.yaml` 走；这几份文件都不会被 CPA 自身的热重载 watcher 监视。
+- **`quota-warmup.yaml` 的生成/增量维护只在每次 tick（30 秒一次）或 `status`/`set` 请求时触发**，不是文件系统事件驱动（没有 fsnotify）；新增账号最坏要等到下一次 tick 才会出现在文件里，但打开面板/请求 `status` 会立即触发一次，所以实际感知通常是"秒级"而不是"最多 30 秒"。
+- **Node 级 YAML 编辑对"空 mapping 会被序列化成 flow style（`accounts: {}`）"这个 `yaml.v3` 行为做了专门规避**（否则再往里追加带行尾注释的账号段会生成语法错误的 YAML）；这是实现过程中用真实单元测试挖出的一个真 bug，已通过强制恢复 block style 修复，回归测试见 `warmupfile_test.go` 的 `TestWarmupFileManagerSetAccountCreatesMissingSection`。
+- overrides.json 迁移到 `quota-warmup.yaml` 只发生一次（迁移后原文件被重命名），且只搬运模型覆盖，不搬运"账号是否启用"的状态，见"面板与模型选择"一节。
+- 三种配置模式（文件 / v0.3.0 内联 / v0.1-v0.2 内联）互斥且按固定优先级探测（先查旧版顶层键，再查 v0.3.0 顶层键，都没有才是文件模式）；同一份 `config.yaml` 不支持混着写（比如顶层既有 `time:` 又想用文件模式）。
 
 ## v0.1.1（线上手动触发实测后的修复）
 
@@ -302,3 +352,23 @@ curl -s 'http://127.0.0.1:8317/v0/resource/plugins/cpa-quota-warmup/set?scope=au
 8. 新增/更新测试：`cron_test.go`（cron 各写法 + 到期/补发边界）、`overrides_test.go`（读写 + 跨重载持久化）、`config_new_format_test.go`（新格式解析、账号对象覆盖、模型优先级链、新旧格式等价性）、`sender_test.go`（`httptest` 起真 HTTP server 测 `AvailableModels`/`ListModelsDetailed`）、`management_new_format_test.go`（`/set` 路由的校验/保存/清除、新格式 `status` 的 `time`/`accounts`/`model_source`/`available_models`）、`ops_merge_config_test.go`（直接从 `ops/merge-config.py` 里抽取 `BLOCK` 常量喂给 `decodeConfig`，防止脚本与解析器的契约漂移）。ABI 集成测试新增 `/set` 路由与新配置格式相关断言。
 9. i18n 目录新增约 20 个 key（旧格式检测提示、未配置 accounts 提示、时间表达式解析失败提示、候选模型均不可用提示、`/set` 路由的四种响应文案、面板新增的标签/按钮/列头），四语言齐全，`TestMessageCatalogsHaveTheSameKeys` 继续保证四张表 key 集合一致。
 10. `pluginVersion` 升到 `0.3.0`。
+
+## v0.4.0（多账号配置改为独立文件，每个认证文件一段）
+
+用户反馈"多账号还是难配"（在一份 `config.yaml` 里维护一堆 glob/覆盖对象容易出错）。这一版把账号配置从 `config.yaml` 挪到插件自动生成维护的 `quota-warmup.yaml`，每个认证文件一段，改一个字段就行：
+
+1. **新默认「文件模式」**：`config.yaml` 只需要 `enabled: true`（可选 `config-file:` 指定路径，默认 `<cwd>/quota-warmup.yaml`）。插件启动/每次 tick 都会检查并维护这份文件：不存在就用 `host.auth.list` 全量生成（每个非 runtime-only 认证文件一段，`enabled: false`，行尾 `# provider: xxx` 注释）；已存在则在 **yaml.v3 Node 级别**增量编辑——新账号追加、消失的账号在行尾追加 `# 认证文件不存在`（账号回来后自动去掉），用户自己的键值、注释、格式全部保留，不做整份重新生成；只有真的有变化才原子写回（temp+rename）。见 `warmupfile.go`。
+2. **`quota-warmup.yaml` 结构**：`defaults: {time, model}` + `accounts: {<认证文件名>: {enabled, time, model, message?, max_tokens?}}`；账号段可以省略字段（缺省用 `defaults`，`enabled` 缺省 `false`）。`time`/`model` 语法与 v0.3.0 一致（HH:MM/逗号列表/cron；`auto` 或具体模型名）。
+3. **热加载与容错**：每次 tick 按 mtime 检测变化重新解析；**解析失败绝不影响调度**——继续用上一次解析成功的配置，打一行 `host.log`（四语言）并在 `status`/面板上显示错误信息，等用户改好后自动恢复。`status`/`set` 请求也会顺带触发一次生成/校对，所以刚注册完插件、tick 还没跑到时打开面板也能看到已生成的文件内容。
+4. **面板可编辑 启用/时间/模型**：账号表每行新增「启用」勾选框和可编辑的「时间」输入框（模型编辑沿用 v0.3.0 的 `<input list=...>` + 下拉数据源）；新 `GET .../set?auth=<name>&enabled=<bool>&time=<...>&model=<id|auto>`（只传的字段会被写入，其余不动）直接 Node 级写回 `quota-warmup.yaml` 对应账号段，不再需要 `overrides.json` 这一层。面板顶部显示当前 `mode`（`file`/`inline`）与文件路径。
+5. **`overrides.json` 一次性迁移**：升级后若发现 v0.3.0 遗留的 `overrides.json`，第一次启动会把其中的模型覆盖（按账号 + 全局）并入新生成的 `quota-warmup.yaml`，再把原文件改名为 `overrides.json.migrated`；只搬模型，不搬"是否启用"。
+6. **完全向后兼容**：`config.yaml` 里仍保留 v0.3.0 顶层 `time`/`model`/`accounts`，或 v0.1.0/v0.2.0 的 `default`/`providers`/`auths`/... 这些旧键 → 继续按原逻辑跑，统一归类为「内联模式」，**不生成/不接管** `quota-warmup.yaml`；`status` 里 `config.mode` 显示 `inline`（新文件模式是 `file`），`plugin.register` 检测到内联配置时打一行提示可以精简迁移的 `host.log`。`advanced:`（`base-url`/`api-key`/`language`/`log`/`max-rounds`/`catch-up-minutes`/`message`/`max-tokens`）两种模式下都从 `config.yaml` 读，行为不变。v0.1.0/v0.2.0 内联模式下 `/set` 直接返回 501（这个格式本来就没有面板保存能力）；v0.3.0 内联模式的面板行为完全不变。
+7. **`ConfigFields` 从 5 条进一步精简为 3 条**：`enabled`、`config-file`、`advanced`。
+8. 新增文件：`warmupfile.go`（`quota-warmup.yaml` 的 Node 级读写/生成/增量维护/热加载与解析失败回退，`resolveFileAuth` 是文件模式的调度解析）；`overrides.go` 新增 `migrateOverridesToWarmupFile`。`runner.go` 的 `groupDueTargetsNew`/`groupDueTargetsFile` 共享同一个 `groupDueTargetsFromResolver`，`tickNew`/`tickFile` 共享同一个 `runTickForGroups`，`manualTriggerNew`/`manualTriggerFile` 共享同一个 `runManualTrigger`——三种模式除了"怎么解析出一个账号该在什么时间用什么模型预热"这一步，调度/发送/覆盖核对/持久化逻辑完全一致。
+9. **实现过程中用真实单元测试挖出一个真 bug**：`yaml.v3` 会把空 mapping（`accounts: {}`）序列化成 flow style，一旦后续往里追加带行尾注释的账号段，再次编码会生成语法错误的 YAML（`accounts: {a.json:, # 注释\n{model: x}}` 这种断行断在 flow 集合中间）。已在每处可能"追加子节点"的地方强制恢复 block style 修复，回归测试见 `TestWarmupFileManagerSetAccountCreatesMissingSection`。
+10. 新增测试：`warmupfile_test.go`（生成、增量追加保留注释、消失账号标注与恢复、解析失败回退与自愈、`setAccount` 保留注释写回、创建缺失账号段、只在有变化时才写盘）、`warmupfile_migration_test.go`（`overrides.json` 迁移三种情况：正常迁移、文件不存在、文件损坏）、`management_file_mode_test.go`（`status` 的 `mode`/`config_file`、`/set` 的启用/时间/模型写回与校验、内联两种模式的 `mode`/`/set` 门禁）、`runner_file_mode_test.go`（`manualTrigger`/`tick` 全链路：启用账号→发预热请求→usage 覆盖核对→`state.json` 落盘，全部走真实引擎代码、只在网络层用 fake）。`ops_merge_config_test.go` 同步更新为校验新的最小 `BLOCK`。ABI 集成测试同步更新为新的 `BASE_CONFIG`（`enabled: true` + `config-file` 指向临时文件）与 `/set` 的新参数形状。
+11. `pluginVersion` 升到 `0.4.0`。
+
+## v0.4.1
+
+- 面板账号表版式整理：列顺序改为 名称/provider/启用/模型/时间点/下次触发/状态/操作，未启用账号显示灰色「未启用」，保存/自动按钮并入操作列。

@@ -5,7 +5,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
+
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
 const overridesFileName = "overrides.json"
@@ -127,4 +130,52 @@ func overridesFilePath() (string, error) {
 		return "", fmt.Errorf("resolve working directory: %w", err)
 	}
 	return filepath.Join(workDir, stateDirName, overridesFileName), nil
+}
+
+// migrateOverridesToWarmupFile is v0.4's one-time upgrade path: v0.3's panel
+// model overrides lived in overrides.json (see modelOverrides above), keyed
+// by auth name (plus one "every account" global slot). v0.4's file mode has
+// no separate override layer -- the panel edits quota-warmup.yaml directly
+// -- so on first startup in file mode, any overrides.json found is folded
+// into fm's accounts (per-auth model) and defaults (the old global slot,
+// which has no equivalent "every account" field of its own in the new
+// schema other than defaults.model), then renamed to "<path>.migrated" so
+// this only ever runs once. A missing overrides.json is not an error
+// (returns migrated=false, err=nil); a present-but-unreadable/corrupt one is
+// left alone (not renamed) so it is not silently lost.
+func migrateOverridesToWarmupFile(overridesPath string, fm *warmupFileManager, entries []pluginapi.HostAuthFileEntry) (migrated bool, err error) {
+	raw, err := os.ReadFile(overridesPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("read %s: %w", overridesPath, err)
+	}
+	var ov modelOverrides
+	if err := json.Unmarshal(raw, &ov); err != nil {
+		return false, fmt.Errorf("parse %s: %w", overridesPath, err)
+	}
+
+	if err := fm.ensureFresh(entries); err != nil {
+		return false, fmt.Errorf("prepare %s before migration: %w", fm.path, err)
+	}
+	for name, model := range ov.Auths {
+		model = strings.TrimSpace(model)
+		if model == "" {
+			continue
+		}
+		if err := fm.setAccount(name, warmupFieldUpdate{Model: &model}, ""); err != nil {
+			return false, fmt.Errorf("migrate override for %s: %w", name, err)
+		}
+	}
+	if g := strings.TrimSpace(ov.Global); g != "" {
+		if err := fm.setDefaultsModel(g); err != nil {
+			return false, fmt.Errorf("migrate global override: %w", err)
+		}
+	}
+
+	if err := os.Rename(overridesPath, overridesPath+".migrated"); err != nil {
+		return false, fmt.Errorf("rename %s: %w", overridesPath, err)
+	}
+	return true, nil
 }
