@@ -263,6 +263,57 @@ type authStatus struct {
 	NextTrigger string   `json:"next_trigger,omitempty"`
 	Skipped     string   `json:"skipped,omitempty"`
 	Warning     string   `json:"warning,omitempty"`
+	// Models (v0.6.2) is this account's own provider's model list -- the
+	// union of its built-in candidate list and whatever available_models
+	// entries map to it via modelsForProvider (candidates.go) -- for the
+	// panel's per-row model dropdown to render instead of the full
+	// available_models list every account used to be offered regardless of
+	// provider. Always present (as [] rather than omitted, via
+	// make([]string, 0, ...) below) so the panel's JS never has to
+	// special-case "field absent" vs "provider has no known models".
+	Models []string `json:"models"`
+	// ModelHint (v0.6.2) is a non-blocking, gray informational note shown
+	// when this account's resolved Model is not on its own Models list --
+	// see applyModelProviderHint below. Unlike Warning (which the panel
+	// renders as a red failure badge), this never means the model is
+	// actually unusable: owned_by is only a heuristic proxy for "which
+	// provider" (see modelsForProvider's doc comment in candidates.go), so
+	// a real, reachable model can legitimately be absent from the list.
+	ModelHint string `json:"model_hint,omitempty"`
+}
+
+// authStatusModels wraps modelsForProvider (candidates.go) so
+// authStatus.Models always serializes as [] rather than null -- see that
+// field's own doc comment for why the panel's JS should never have to
+// special-case an absent/null field.
+func authStatusModels(provider string, available []modelInfo) []string {
+	models := modelsForProvider(provider, available)
+	if models == nil {
+		return []string{}
+	}
+	return models
+}
+
+// applyModelProviderHint sets as.ModelHint when as.Model is pinned to a
+// real, non-empty value that as.Models (this account's own provider's
+// model list) does not recognize. An auto-selected model can never trigger
+// this (selectModel already only picks from the provider's own candidate
+// list, itself always a subset of Models), so in practice this only fires
+// for a hand-typed or quota-warmup.yaml-set explicit model. Skipped
+// entirely when Models is empty (nothing to compare against -- e.g. the
+// GET /v1/models precheck itself failed, or this is a provider
+// modelsForProvider has no data for at all), so as not to claim a mismatch
+// when the real answer is simply "unknown".
+func applyModelProviderHint(as *authStatus, l lang) {
+	if as.Model == "" || len(as.Models) == 0 {
+		return
+	}
+	for _, m := range as.Models {
+		if m == as.Model {
+			return
+		}
+	}
+	as.ModelHint = tr(l, msgModelNotInProviderList)
 }
 
 type statusPayload struct {
@@ -336,7 +387,7 @@ func handleStatusRequest(req pluginapi.ManagementRequest) pluginapi.ManagementRe
 			if name == "" {
 				continue
 			}
-			as := authStatus{Name: name, Provider: entry.Provider}
+			as := authStatus{Name: name, Provider: entry.Provider, Models: authStatusModels(entry.Provider, payload.AvailableModels)}
 			switch {
 			case entry.Disabled || entry.Unavailable:
 				as.Skipped = tr(l, msgSkippedDisabled)
@@ -352,6 +403,7 @@ func handleStatusRequest(req pluginapi.ManagementRequest) pluginapi.ManagementRe
 					as.Skipped = tr(l, msgSkippedNoModel)
 				}
 			}
+			applyModelProviderHint(&as, l)
 			payload.Auths = append(payload.Auths, as)
 		}
 		return jsonManagementResponse(http.StatusOK, payload)
@@ -364,7 +416,7 @@ func handleStatusRequest(req pluginapi.ManagementRequest) pluginapi.ManagementRe
 			if name == "" {
 				continue
 			}
-			as := authStatus{Name: name, Provider: entry.Provider}
+			as := authStatus{Name: name, Provider: entry.Provider, Models: authStatusModels(entry.Provider, payload.AvailableModels)}
 			switch {
 			case entry.Disabled || entry.Unavailable:
 				as.Skipped = tr(l, msgSkippedDisabled)
@@ -390,6 +442,7 @@ func handleStatusRequest(req pluginapi.ManagementRequest) pluginapi.ManagementRe
 					as.NextTrigger = next.Format(time.RFC3339)
 				}
 			}
+			applyModelProviderHint(&as, l)
 			payload.Auths = append(payload.Auths, as)
 		}
 		return jsonManagementResponse(http.StatusOK, payload)
@@ -414,7 +467,7 @@ func handleStatusRequest(req pluginapi.ManagementRequest) pluginapi.ManagementRe
 		if name == "" {
 			continue
 		}
-		as := authStatus{Name: name, Provider: entry.Provider}
+		as := authStatus{Name: name, Provider: entry.Provider, Models: authStatusModels(entry.Provider, payload.AvailableModels)}
 		switch {
 		case entry.Disabled || entry.Unavailable:
 			as.Skipped = tr(l, msgSkippedDisabled)
@@ -459,6 +512,7 @@ func handleStatusRequest(req pluginapi.ManagementRequest) pluginapi.ManagementRe
 				as.NextTrigger = next.Format(time.RFC3339)
 			}
 		}
+		applyModelProviderHint(&as, l)
 		payload.Auths = append(payload.Auths, as)
 	}
 

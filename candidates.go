@@ -1,6 +1,9 @@
 package main
 
-import "strings"
+import (
+	"sort"
+	"strings"
+)
 
 // providerCandidates is the built-in "cheapest first" model candidate list
 // per provider (v0.3.0), used when no explicit model is configured anywhere
@@ -57,4 +60,85 @@ func selectModel(provider string, available map[string]bool, precheckOK bool) (m
 		}
 	}
 	return "", false
+}
+
+// providerOwnedByAliases maps a provider id to the set of GET /v1/models
+// "owned_by" values that should be treated as belonging to it.
+//
+// owned_by is an upstream *format family*, not a CPA provider id -- verified
+// against a live instance: antigravity accounts report owned_by
+// "antigravity", codex reports "openai", kimi reports "moonshot", xai
+// reports "xai", and an openai-compatibility account carrying glm/minimax/
+// qwen models reports "anthropic" (its request format, not its actual
+// vendor). The "xai" owned_by group was also observed to contain aliased
+// models from other providers (e.g. kimi-k3, gpt-5.6-terra) that do not
+// belong to xai at all -- one more reason this mapping is a best-effort
+// proxy, not a source of truth (the host ABI exposes no "which models can
+// this specific auth reach" callback at all). Providers not listed here
+// fall back to a literal owned_by == provider match.
+var providerOwnedByAliases = map[string][]string{
+	"antigravity": {"antigravity"},
+	"codex":       {"openai", "codex"},
+	"kimi":        {"moonshot", "kimi"},
+	"xai":         {"xai"},
+	"claude":      {"anthropic", "claude"},
+	"gemini-cli":  {"google", "gemini"},
+	"aistudio":    {"google", "gemini"},
+	"vertex":      {"google", "gemini"},
+}
+
+// modelsForProvider returns the models a provider's own accounts should be
+// offered in the panel's per-row model dropdown (v0.6.2): the union of
+// (a) this provider's built-in cheapest-first candidate list (candidates.go),
+// restricted to whatever is actually present in available, and (b) every
+// available model whose owned_by maps to this provider via
+// providerOwnedByAliases (or, for a provider absent from that table, whose
+// owned_by literally equals the provider id). Group (a)'s cheapest-first
+// order is preserved and always sorted first; group (b)'s remainder (minus
+// anything already included from (a)) is appended alphabetically. A model
+// id present in both groups appears only once. Returns nil (not an empty
+// non-nil slice) when nothing matches, so callers can treat "no models" and
+// "unknown provider" the same way.
+func modelsForProvider(provider string, available []modelInfo) []string {
+	p := strings.ToLower(strings.TrimSpace(provider))
+	if p == "" {
+		return nil
+	}
+
+	ownedBySet := map[string]bool{}
+	if aliases, ok := providerOwnedByAliases[p]; ok {
+		for _, a := range aliases {
+			ownedBySet[a] = true
+		}
+	} else {
+		ownedBySet[p] = true
+	}
+
+	availableSet := make(map[string]bool, len(available))
+	for _, m := range available {
+		availableSet[m.ID] = true
+	}
+
+	seen := make(map[string]bool)
+	var out []string
+	for _, c := range providerCandidateList(p) {
+		if availableSet[c] && !seen[c] {
+			seen[c] = true
+			out = append(out, c)
+		}
+	}
+
+	var rest []string
+	for _, m := range available {
+		if seen[m.ID] {
+			continue
+		}
+		if ownedBySet[strings.ToLower(strings.TrimSpace(m.OwnedBy))] {
+			seen[m.ID] = true
+			rest = append(rest, m.ID)
+		}
+	}
+	sort.Strings(rest)
+	out = append(out, rest...)
+	return out
 }

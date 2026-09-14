@@ -278,6 +278,7 @@ const panelHTMLTemplate = `<!doctype html>
   .combo-option { padding: 6px 12px; cursor: pointer; color: var(--text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .combo-option:hover, .combo-option-active { background: var(--bg-hover); }
   .combo-option-current { font-weight: 700; }
+  .combo-empty { padding: 6px 12px; color: var(--text-secondary); font-size: 12px; }
   .text-btn {
     appearance: none; border: 0; background: none; padding: 0; margin: 0;
     color: var(--primary-color); font: inherit; font-size: 12px; text-decoration: underline;
@@ -482,6 +483,116 @@ const panelHTMLTemplate = `<!doctype html>
     if (msg) { box.textContent = msg; box.hidden = false; } else { box.hidden = true; }
   }
 
+  // --- console-API model lookup (v0.6.2 addendum) ----------------------
+  //
+  // The host ABI this plugin runs under exposes no "which models can this
+  // specific auth actually reach" callback at all (see candidates.go's
+  // modelsForProvider doc comment for the provider-inference fallback this
+  // whole section exists to upgrade past when possible). The CPA console
+  // itself already has exactly that, via its own account card's "模型"
+  // button: GET /v0/management/auth-files/models?name=<auth>, returning
+  // {"models":[{"id","display_name","type","owned_by"}]} (host source:
+  // internal/api/handlers/management/auth_files.go, reading
+  // registry.GetModelsForClient(authID)) -- authenticated with the
+  // console's own management key (Authorization: Bearer <key>), which this
+  // plugin's backend has no way to obtain (the host only stores its bcrypt
+  // hash). This panel is served same-origin as the console as
+  // /plugin-pages/cpa-quota-warmup/0 (an iframe), though, so when it is
+  // actually embedded there it can read the *browser's* already-
+  // authenticated session the exact same way the console's own JS does and
+  // call this endpoint directly, client-side, never touching this plugin's
+  // own backend at all.
+
+  // consoleAuthPassphraseBytes returns the UTF-8 bytes of the XOR key the
+  // console's own localStorage "cli-proxy-auth" encoding uses. Reproducible
+  // here only because this page is embedded same-origin (location.host
+  // matches) under the same browser session (navigator.userAgent matches)
+  // as the console itself.
+  function consoleAuthPassphraseBytes() {
+    var passphrase = "cli-proxy-api-webui::secure-storage|" + window.location.host + "|" + navigator.userAgent;
+    return new TextEncoder().encode(passphrase);
+  }
+
+  function base64ToBytes(b64) {
+    var bin = atob(b64);
+    var out = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) { out[i] = bin.charCodeAt(i); }
+    return out;
+  }
+
+  function xorBytes(data, key) {
+    var out = new Uint8Array(data.length);
+    for (var i = 0; i < data.length; i++) { out[i] = data[i] ^ key[i % key.length]; }
+    return out;
+  }
+
+  // readConsoleManagementKey best-effort mirrors the CPA console's own
+  // decoding of its localStorage "cli-proxy-auth" entry: a plaintext JSON
+  // envelope, or (far more commonly) "enc::v1::" followed by
+  // base64(XOR(utf8(JSON), consoleAuthPassphraseBytes())). Returns
+  // {key, apiBase} on success, or null on *any* failure whatsoever (key
+  // absent, wrong prefix, bad base64, bad JSON, no managementKey field, not
+  // actually embedded in the console at all, TextEncoder/atob unsupported,
+  // ...) -- this mechanism is always a best-effort upgrade, never a hard
+  // requirement (see fetchConsoleModelsForAccount's own fallback). The
+  // decoded key is only ever used as this function's own return value (an
+  // Authorization header for a fetch call) -- never logged, never written
+  // to the DOM, never sent to this plugin's own backend.
+  function readConsoleManagementKey() {
+    try {
+      var raw = localStorage.getItem("cli-proxy-auth");
+      if (!raw) { return null; }
+      var obj;
+      if (raw.indexOf("enc::v1::") === 0) {
+        var cipherBytes = base64ToBytes(raw.slice(9));
+        var plainBytes = xorBytes(cipherBytes, consoleAuthPassphraseBytes());
+        obj = JSON.parse(new TextDecoder("utf-8").decode(plainBytes));
+      } else {
+        obj = JSON.parse(raw);
+      }
+      var managementKey = obj && obj.state && obj.state.managementKey;
+      if (!managementKey || typeof managementKey !== "string") { return null; }
+      var apiBase = (obj.state.apiBase && String(obj.state.apiBase)) || window.location.origin;
+      return { key: managementKey, apiBase: apiBase };
+    } catch (err) {
+      return null;
+    }
+  }
+
+  // accountModelsCache/consoleModelsTTLMs are declared further below,
+  // alongside the rest of the model-combo state, since they are read
+  // synchronously by openCombo -- see that function's own doc comment for
+  // the full cache/fallback flow this feeds.
+
+  // fetchConsoleModelsForAccount resolves to this account's real available
+  // models (as combo entries: {id, group:"", displayName}) on success, or
+  // null on any failure (no management key available, 401, network error,
+  // malformed response, ...) -- callers fall back to the provider-inferred
+  // list and surface a footer note when this resolves to null. Successful
+  // results are cached for consoleModelsTTLMs.
+  function fetchConsoleModelsForAccount(name) {
+    var cached = accountModelsCache[name];
+    if (cached && cached.expiresAt > Date.now()) {
+      return Promise.resolve(cached.entries);
+    }
+    var auth = readConsoleManagementKey();
+    if (!auth) { return Promise.resolve(null); }
+    var url = auth.apiBase.replace(/\/+$/, "") + "/v0/management/auth-files/models?name=" + encodeURIComponent(name);
+    return fetch(url, { headers: { "Authorization": "Bearer " + auth.key }, cache: "no-store" })
+      .then(function (resp) {
+        if (!resp.ok) { throw new Error("status " + resp.status); }
+        return resp.json();
+      })
+      .then(function (body) {
+        var entries = ((body && body.models) || []).map(function (m) {
+          return { id: m.id, group: "", displayName: m.display_name || "" };
+        });
+        accountModelsCache[name] = { entries: entries, expiresAt: Date.now() + consoleModelsTTLMs };
+        return entries;
+      })
+      .catch(function () { return null; });
+  }
+
   // nameCellHTML truncates a long auth file name (a full email address plus
   // provider/team suffix routinely exceeds the column width) with an
   // ellipsis, keeping the untruncated name available as the title tooltip.
@@ -565,16 +676,63 @@ const panelHTMLTemplate = `<!doctype html>
   var comboItems = []; // flat list of {el, value} for the currently-rendered options, in visual/keyboard-nav order (group headings are not included -- they are not selectable)
   var comboActiveIndex = -1; // index into comboItems the keyboard cursor is on, -1 = none
 
+  // accountModels (v0.6.2) maps an account name to its own provider-filtered
+  // model list (status' per-account "models" field, computed server-side by
+  // modelsForProvider in candidates.go) -- rebuilt fresh on every
+  // renderAccounts call. This is the fallback source for a per-account
+  // row's model combo whenever the console-API source below is unavailable
+  // or fails; the config section's global-model editor (inline mode) is not
+  // inside any accounts-table row and always uses the full comboModels list
+  // instead (see comboEntriesForInput/openCombo).
+  var accountModels = {};
+
+  // accountModelsCache (v0.6.2 addendum) caches this account's *actual*
+  // available models, fetched from the CPA console's own authenticated
+  // GET /v0/management/auth-files/models?name=<auth> endpoint (see
+  // readConsoleManagementKey's doc comment for how/why this panel can call
+  // it at all) -- name -> { entries: [{id, group:"", displayName}], expiresAt }.
+  // A 5-minute TTL keeps repeated opens of the same row from re-fetching on
+  // every click while still picking up real changes reasonably soon.
+  var accountModelsCache = {};
+  var consoleModelsTTLMs = 5 * 60 * 1000;
+
   function comboAutoLabel() {
     return "auto (" + t("ui_model_auto_full") + ")";
   }
 
-  // renderComboMenu (re)builds the menu's contents for the given filter
-  // query (substring match, case-insensitive, against both the model id and
-  // its owned_by group) and rebuilds comboItems/resets the keyboard cursor.
-  // The pinned "auto (...)" entry is never filtered out ("固定" in the
-  // spec) -- it is always a valid choice regardless of what has been typed.
-  function renderComboMenu(query) {
+  // comboEntriesForInput normalizes the *fallback* (provider-inferred)
+  // model source for input into a flat {id, group} array renderComboMenu
+  // can render uniformly: a per-account row's own list (group always "" --
+  // no owned_by grouping at all, since status' per-account "models" is
+  // already just a flat list of ids, not {id, owned_by} objects, and the
+  // row-level dropdown is not supposed to be grouped in the first place),
+  // or -- when input is not inside an accounts-table row at all, i.e. the
+  // config section's global-model editor -- the full comboModels list
+  // grouped by owned_by. See openCombo for where the console-API source
+  // (accountModelsCache) is preferred over this when available.
+  function comboEntriesForInput(input) {
+    var row = input.closest("tr[data-name]");
+    if (row) {
+      var name = row.getAttribute("data-name");
+      var list = Object.prototype.hasOwnProperty.call(accountModels, name) ? accountModels[name] : [];
+      return list.map(function (id) { return { id: id, group: "" }; });
+    }
+    return comboModels.map(function (m) { return { id: m.id, group: m.owned_by || "" }; });
+  }
+
+  // renderComboMenu (re)builds the menu's contents from entries (see
+  // comboEntriesForInput) for the given filter query (substring match,
+  // case-insensitive, against the model id, its group, and its display
+  // name) and rebuilds comboItems/resets the keyboard cursor. The pinned
+  // "auto (...)" entry is never filtered out ("固定" in the spec) -- it is
+  // always a valid choice regardless of what has been typed. When nothing
+  // else matches (an empty per-provider list, most commonly -- see the
+  // spec's explicit "该 provider 暂无可用模型" requirement), a single
+  // non-selectable gray line is shown instead of any group/option rows.
+  // footerNote (optional), when given, is appended as one more such gray
+  // line below everything else -- used for the "已按 provider 推断（未取到
+  // 账号模型）" note when the console-API fetch failed.
+  function renderComboMenu(query, entries, footerNote) {
     var q = (query || "").trim().toLowerCase();
     comboItems = [];
     var frag = document.createDocumentFragment();
@@ -589,32 +747,71 @@ const panelHTMLTemplate = `<!doctype html>
     frag.appendChild(autoOpt);
 
     var groups = {}, order = [];
-    comboModels.forEach(function (m) {
-      var g = m.owned_by || "";
-      var hay = (m.id + " " + g).toLowerCase();
+    (entries || []).forEach(function (e) {
+      var g = e.group || "";
+      var hay = (e.id + " " + g + " " + (e.displayName || "")).toLowerCase();
       if (q && hay.indexOf(q) === -1) { return; }
       if (!groups[g]) { groups[g] = []; order.push(g); }
-      groups[g].push(m.id);
-    });
-    order.forEach(function (g) {
-      if (g) {
-        var head = document.createElement("div");
-        head.className = "combo-group";
-        head.textContent = g;
-        frag.appendChild(head);
-      }
-      groups[g].forEach(function (id) {
-        var opt = document.createElement("div");
-        opt.className = "combo-option";
-        opt.setAttribute("role", "option");
-        opt.setAttribute("data-value", id);
-        opt.textContent = id;
-        if (id === comboCurrentValue) { opt.classList.add("combo-option-current"); }
-        comboItems.push({ el: opt, value: id });
-        frag.appendChild(opt);
-      });
+      groups[g].push(e);
     });
 
+    if (!order.length) {
+      var empty = document.createElement("div");
+      empty.className = "combo-empty";
+      empty.textContent = t("ui_no_provider_models");
+      frag.appendChild(empty);
+    } else {
+      order.forEach(function (g) {
+        if (g) {
+          var head = document.createElement("div");
+          head.className = "combo-group";
+          head.textContent = g;
+          frag.appendChild(head);
+        }
+        groups[g].forEach(function (e) {
+          var opt = document.createElement("div");
+          opt.className = "combo-option";
+          opt.setAttribute("role", "option");
+          opt.setAttribute("data-value", e.id);
+          opt.textContent = e.id;
+          if (e.displayName && e.displayName !== e.id) { opt.title = e.displayName; }
+          if (e.id === comboCurrentValue) { opt.classList.add("combo-option-current"); }
+          comboItems.push({ el: opt, value: e.id });
+          frag.appendChild(opt);
+        });
+      });
+    }
+
+    if (footerNote) {
+      var foot = document.createElement("div");
+      foot.className = "combo-empty";
+      foot.textContent = footerNote;
+      frag.appendChild(foot);
+    }
+
+    comboMenuEl.innerHTML = "";
+    comboMenuEl.appendChild(frag);
+    comboActiveIndex = -1;
+  }
+
+  // renderComboLoading shows just the pinned "auto" entry plus a "加载中…"
+  // placeholder line while a console-API fetch (see openCombo) is in
+  // flight, so the menu never appears to hang empty.
+  function renderComboLoading() {
+    comboItems = [];
+    var frag = document.createDocumentFragment();
+    var autoOpt = document.createElement("div");
+    autoOpt.className = "combo-option";
+    autoOpt.setAttribute("role", "option");
+    autoOpt.setAttribute("data-value", "auto");
+    autoOpt.textContent = comboAutoLabel();
+    if (comboCurrentValue === "auto") { autoOpt.classList.add("combo-option-current"); }
+    comboItems.push({ el: autoOpt, value: "auto" });
+    frag.appendChild(autoOpt);
+    var loading = document.createElement("div");
+    loading.className = "combo-empty";
+    loading.textContent = t("ui_loading");
+    frag.appendChild(loading);
     comboMenuEl.innerHTML = "";
     comboMenuEl.appendChild(frag);
     comboActiveIndex = -1;
@@ -642,12 +839,63 @@ const panelHTMLTemplate = `<!doctype html>
   // input's current value -- per the spec, clicking the toggle or focusing/
   // clicking the input always expands the complete list; only subsequently
   // typing narrows it (see the "input" listener below).
+  //
+  // Per-account rows prefer the console-API source (this account's real
+  // available models, fetched from the CPA console's own authenticated
+  // endpoint -- see readConsoleManagementKey) over the provider-inferred
+  // fallback (comboEntriesForInput) whenever a management key is available
+  // at all: cached (still fresh) results render immediately and
+  // synchronously; an uncached lookup shows a brief loading placeholder and
+  // swaps in the real result (or falls back, with a footer note, on
+  // failure) once the request settles. The config section's global-model
+  // editor (no enclosing <tr data-name>) never attempts the console API at
+  // all -- there is no single account to look it up for -- and always uses
+  // the full comboModels list synchronously, exactly as before.
   function openCombo(input) {
     comboActiveInput = input;
     comboCurrentValue = (input.value || "").trim() || "auto";
     comboMenuEl.hidden = false;
-    renderComboMenu("");
+
+    var row = input.closest("tr[data-name]");
+    var name = row ? row.getAttribute("data-name") : null;
+    if (!name) {
+      renderComboMenu("", comboEntriesForInput(input));
+      positionComboMenu(input);
+      return;
+    }
+
+    var cached = accountModelsCache[name];
+    if (cached && cached.expiresAt > Date.now()) {
+      renderComboMenu("", cached.entries);
+      positionComboMenu(input);
+      return;
+    }
+
+    if (!readConsoleManagementKey()) {
+      renderComboMenu("", comboEntriesForInput(input));
+      positionComboMenu(input);
+      return;
+    }
+
+    renderComboLoading();
     positionComboMenu(input);
+    fetchConsoleModelsForAccount(name).then(function (entries) {
+      // The operator may have already closed this combo, or opened a
+      // different row's, by the time the request settles -- only apply the
+      // result if it still belongs to the field the menu is showing.
+      if (comboActiveInput !== input) { return; }
+      // Only filter by what the operator has typed *since opening*; the
+      // pre-existing value (e.g. "gpt-5.6-luna") must not hide the rest of
+      // the list the way it would on a fresh open.
+      var typed = (input.value || "").trim();
+      var query = typed === comboCurrentValue || (typed === "" && comboCurrentValue === "auto") ? "" : typed;
+      if (entries) {
+        renderComboMenu(query, entries);
+      } else {
+        renderComboMenu(query, comboEntriesForInput(input), t("ui_model_fallback_hint"));
+      }
+      positionComboMenu(input);
+    });
   }
 
   function closeCombo() {
@@ -739,7 +987,19 @@ const panelHTMLTemplate = `<!doctype html>
   document.addEventListener("input", function (event) {
     var target = event.target;
     if (target.classList && target.classList.contains("model-input") && comboActiveInput === target) {
-      renderComboMenu(target.value);
+      // Typing filters whichever source is already on screen -- the
+      // console-API result if it is cached (even a still-loading fetch
+      // will overwrite this once it settles, re-applying target.value at
+      // that point, see openCombo), otherwise the provider-inferred
+      // fallback. Never triggers a new console-API request itself.
+      var row = target.closest("tr[data-name]");
+      var name = row ? row.getAttribute("data-name") : null;
+      var cached = name ? accountModelsCache[name] : null;
+      if (cached && cached.expiresAt > Date.now()) {
+        renderComboMenu(target.value, cached.entries);
+      } else {
+        renderComboMenu(target.value, comboEntriesForInput(target));
+      }
       positionComboMenu(target);
     }
   });
@@ -791,6 +1051,15 @@ const panelHTMLTemplate = `<!doctype html>
     if (lastTickError) {
       chips.push('<span class="badge badge-failure" title="' + esc(lastTickError) + '">' + esc(t("ui_label_last_tick_error")) + '</span>');
     }
+    // v0.6.2 addendum: whether the account rows' model dropdown can reach
+    // the console's own per-account model endpoint (see
+    // readConsoleManagementKey) or is falling back to provider inference --
+    // a coarse, page-wide indicator of which *mechanism* is available, not
+    // a guarantee every single row's lookup will succeed (a management key
+    // being present does not rule out an individual 401/network failure,
+    // which is instead surfaced inline in that row's own combo menu).
+    var modelSourceMode = readConsoleManagementKey() ? t("ui_model_source_console") : t("ui_model_source_provider");
+    chips.push(chip(t("ui_label_model_source"), esc(modelSourceMode)));
     document.getElementById("configChips").innerHTML = chips.join("");
 
     var globalModelBox = document.getElementById("configGlobalModel");
@@ -833,7 +1102,14 @@ const panelHTMLTemplate = `<!doctype html>
       ? ('<span class="status-muted">' + esc(a.skipped) + '</span>')
       : ('<span class="status-dot status-dot-success"></span><span>' + esc(t("ui_status_enabled")) + '</span>');
     var warn = a.warning ? (' <span class="badge badge-failure">' + esc(a.warning) + '</span>') : "";
-    return main + warn;
+    // model_hint (v0.6.2): a non-blocking gray note -- unlike Warning above,
+    // this never means the pinned model is actually broken, only that it is
+    // not on this account's own provider-filtered list (see
+    // modelsForProvider's doc comment in candidates.go for why that can be
+    // a false alarm), so it is deliberately styled muted rather than as a
+    // failure badge.
+    var hint = a.model_hint ? ('<br><span class="status-muted">' + esc(a.model_hint) + '</span>') : "";
+    return main + warn + hint;
   }
 
   // fileRowHTML renders one file-mode account row: an editable enabled
@@ -865,6 +1141,10 @@ const panelHTMLTemplate = `<!doctype html>
 
   function renderAccounts(auths, isFile) {
     var rows = auths || [];
+    // Rebuilt from scratch every render (not merged/accumulated) so a
+    // vanished account's stale entry is never left behind.
+    accountModels = {};
+    rows.forEach(function (a) { accountModels[a.name] = a.models || []; });
     var body = rows.map(isFile ? fileRowHTML : inlineRowHTML).join("");
     document.querySelector("#accountsTable tbody").innerHTML = body || ('<tr><td colspan="7" class="empty">' + dash() + '</td></tr>');
   }

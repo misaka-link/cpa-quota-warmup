@@ -235,12 +235,15 @@ plugins:
   - 面板上：校验失败时在编辑器上方用红字显示「第 N 行第 M 列：错误信息」；保存成功刷新账号表。
   - 这几处新增的文案（区块标题、按钮、错误提示）**只做了中文**，没有走四语言（i18n 目录里这几个键四种语言填的是同一句中文，只是为了不破坏 key 集合一致性测试，不是真的翻译）。
   - `mtime` 不是裸的文件系统时间戳字符串：实测发现两次紧挨着的原子写（temp+rename）在这台开发机的文件系统上会落在**完全相同**的纳秒级 `ModTime()` 上（见"已知限制"），所以实际的 token 是 `ModTime + 进程内写入序号` 拼出来的，保证同一个 `warmupFileManager` 实例做的任意两次写永远产生不同的 token。
+- **v0.6.2：账号行的模型下拉只显示该账号所属 provider 的模型**，不再是这台 CPA 实例暴露的全部模型。分两层：
+  1. **兜底：按 provider 推断**。`GET /v1/models` 的 `owned_by` 是上游请求格式族，不是 CPA 的 provider id（实测：antigravity→`antigravity`，codex→`openai`，kimi→`moonshot`，xai→`xai`，claude→`anthropic`/`claude`，gemini-cli/aistudio/vertex→`google`/`gemini`；某些 openai-compatibility 账号挂的 glm/minimax/qwen 甚至标成 `anthropic`）。`candidates.go` 的 `modelsForProvider` 用一张映射表把 `owned_by` 归到 provider，再并上这个 provider 内置候选表里出现在 `available_models` 中的模型，去重后候选表的"从便宜到贵"顺序在前、其余按字母序；`status` JSON 每个账号新增 `models: [...]`（这一层结果），顶层 `available_models` 不变（inline 模式的全局模型框还是用全量）。手输的模型即使不在这个列表里也照常能保存（`/set` 校验只看是否在全量 `available_models` 里），只是行状态会多一行灰字「不属于该 provider 的模型」——不阻止，纯提示，因为 `owned_by` 本来就只是启发式，不是权威归属。
+  2. **优先：直接问控制台要账号的真实可用模型**。CPA 管理控制台账号卡片上的「模型」按钮背后是 `GET /v0/management/auth-files/models?name=<认证文件名>`（宿主 `internal/api/handlers/management/auth_files.go`，读 `registry.GetModelsForClient(authID)`，比 `owned_by` 启发式准），但需要管理密钥鉴权，插件后端只能拿到密钥的 bcrypt 哈希，摸不到明文。因为本面板是以 `/plugin-pages/cpa-quota-warmup/0` 同源 iframe 嵌进控制台的，面板 JS 改为在**浏览器端**原样照抄控制台自己解密 `localStorage['cli-proxy-auth']` 的算法（`"enc::v1::" + base64(XOR(utf8(JSON), key))`，`key = utf8("cli-proxy-api-webui::secure-storage|" + location.host + "|" + navigator.userAgent)`，同源同 UA 才能复现），拿到明文管理密钥后直接以 `Authorization: Bearer` 调控制台自己的这个接口——全程只在浏览器里发生，密钥不落插件后端、不写日志、不进 DOM。账号行下拉展开时按需（不是页面加载就抓全部账号）请求，结果按账号名内存缓存 5 分钟；请求中显示灰字「加载中…」；拿不到（没有管理密钥、401、网络失败）时静默退回上面第 1 层的 provider 推断，并在下拉底部加一行灰字「已按 provider 推断（未取到账号模型）」。**只有把面板当作控制台内嵌页打开时这一层才生效**——如果单独拿面板 URL 在控制台之外打开（没有 `cli-proxy-auth` 这个 localStorage 键，或者跨域访问不到它），会直接退回纯 provider 推断，此时面板顶部「配置」区块的 chips 里会看到「账号模型来源：provider 推断」（能拿到控制台接口时显示「控制台接口」）。
 
 ## 部署
 
 ```bash
 cd ~/cpa-plugins/cpa-quota-warmup
-scripts/build.sh                 # -> dist/cpa-quota-warmup-v0.6.1.so (+ .sha256)
+scripts/build.sh                 # -> dist/cpa-quota-warmup-v0.6.3.so (+ .sha256)
 sudo ops/merge-config.py         # 原地合并默认配置到 /var/lib/cli-proxy-api/config.yaml（保 inode）
                                   # sudo ops/merge-config.py --remove 可移除
 sudo ops/deploy                  # 安装 .so 到插件目录并重启 cli-proxy-api.service
@@ -257,7 +260,7 @@ sudo ops/deploy                  # 安装 .so 到插件目录并重启 cli-proxy
 go vet ./... && go test ./...
 
 # 2. 真 ABI 集成测试（不需要真实宿主/网络）
-python3 integration_abi_test.py dist/cpa-quota-warmup-v0.6.1.so
+python3 integration_abi_test.py dist/cpa-quota-warmup-v0.6.3.so
 
 # 3. 部署后看宿主日志（host.log 回调，前缀 [cpa-quota-warmup]）
 journalctl -u cli-proxy-api | rg 'cpa-quota-warmup'
@@ -408,3 +411,12 @@ curl -s "http://127.0.0.1:8317/v0/resource/plugins/cpa-quota-warmup/config-yaml/
 ## v0.6.1
 
 - 模型选择改为自定义下拉：点开即列出全部可用模型（按 provider 分组、输入即过滤、键盘可选），替换只在前缀匹配时才弹出的原生 datalist。
+
+## v0.6.2
+
+- 账号行的模型下拉从"全量模型"收窄到"该账号所属 provider 的模型"：新增 `candidates.go` 的 `modelsForProvider`（`owned_by` 映射表 + 候选表并集，见"面板与模型选择"）驱动兜底推断，`status` 每个账号新增 `models`/`model_hint` 字段；面板下拉不再分组，列表空时提示「该 provider 暂无可用模型」，手输不在列表里的模型仍可正常保存，只多一行不阻塞的灰字提示。
+- 追加：面板作为控制台同源 iframe 时，优先照抄控制台自己对 `localStorage['cli-proxy-auth']` 的客户端解密算法，直接调控制台的 `GET /v0/management/auth-files/models?name=...` 拿账号的真实可用模型（比 `owned_by` 启发式准），全程只在浏览器发生、密钥不经插件后端；拿不到时静默退回 provider 推断。详见"面板与模型选择"。
+
+## v0.6.3
+
+- 修复：异步取到账号模型（或回退到 provider 推断）后，误把输入框现值当过滤词导致列表只剩当前模型。

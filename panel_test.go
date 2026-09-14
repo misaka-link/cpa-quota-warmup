@@ -100,6 +100,24 @@ func TestPanelTemplateUsesComboBoxNotDatalist(t *testing.T) {
 	}
 }
 
+// TestPanelTemplateReadsConsoleManagementKeyAndCallsAuthFilesModels guards
+// the v0.6.2 addendum: the panel's per-row model combo should prefer an
+// account's *real* available models, fetched client-side from the CPA
+// console's own authenticated GET /v0/management/auth-files/models?name=...
+// endpoint using the management key mirrored out of the console's own
+// "cli-proxy-auth" localStorage entry (see panel.go's
+// readConsoleManagementKey/fetchConsoleModelsForAccount), falling back to
+// the provider-inferred list (candidates.go's modelsForProvider) only when
+// that is unavailable.
+func TestPanelTemplateReadsConsoleManagementKeyAndCallsAuthFilesModels(t *testing.T) {
+	if !strings.Contains(panelHTMLTemplate, "cli-proxy-auth") {
+		t.Errorf(`expected panelHTMLTemplate to read the console's "cli-proxy-auth" localStorage key, found no reference`)
+	}
+	if !strings.Contains(panelHTMLTemplate, "auth-files/models") {
+		t.Errorf("expected panelHTMLTemplate to call the console's GET /v0/management/auth-files/models endpoint, found no reference")
+	}
+}
+
 // enclosingTag returns the nearest "<...>" opening tag that starts before
 // pos in s (an ordinary text position, not inside a tag), i.e. the tag whose
 // content includes the text at pos. Returns "" if none is found nearby.

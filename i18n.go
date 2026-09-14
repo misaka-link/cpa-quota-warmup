@@ -184,6 +184,32 @@ const (
 	// menu's pinned-first "auto (...)" entry's descriptive suffix.
 	msgUIExpand        msgKey = "ui_expand"
 	msgUIModelAutoFull msgKey = "ui_model_auto_full"
+
+	// v0.6.2 additions: the per-account model dropdown now only lists that
+	// account's own provider's models (see candidates.go's
+	// modelsForProvider), not every model this CPA instance exposes.
+	// msgModelNotInProviderList is a non-blocking, gray informational hint
+	// (authStatus.ModelHint) shown when a hand-typed or quota-warmup.yaml-set
+	// model is not on that list -- saving is never blocked by it, since
+	// owned_by is only a heuristic proxy for "which provider" (see that
+	// function's own doc comment), not a guarantee the model is actually
+	// unusable. msgUINoProviderModels is the client-rendered placeholder row
+	// the combo dropdown shows when a provider's own list is empty.
+	msgModelNotInProviderList msgKey = "model_not_in_provider_list"
+	msgUINoProviderModels     msgKey = "ui_no_provider_models"
+
+	// v0.6.2 addendum: the console-API model lookup (see panel.go's
+	// readConsoleManagementKey/fetchConsoleModelsForAccount). "加载中…" while
+	// a lookup is in flight reuses the existing msgUILoading key rather than
+	// adding a duplicate. msgUIModelFallbackHint is the combo menu's footer
+	// note when the console API could not be reached and the
+	// provider-inferred list was used instead. msgUILabelModelSource labels
+	// the top chip summarizing which source is currently in effect
+	// (msgUIModelSourceConsole/msgUIModelSourceProvider are its two values).
+	msgUIModelFallbackHint   msgKey = "ui_model_fallback_hint"
+	msgUILabelModelSource    msgKey = "ui_label_model_source"
+	msgUIModelSourceConsole  msgKey = "ui_model_source_console"
+	msgUIModelSourceProvider msgKey = "ui_model_source_provider"
 )
 
 // messagesEN is the source-of-truth key set: every other language map is
@@ -307,6 +333,12 @@ var messagesEN = map[msgKey]string{
 	msgUIAdvancedSettings:      "Advanced settings",
 	msgUIExpand:                "Expand",
 	msgUIModelAutoFull:         "Auto-select",
+	msgModelNotInProviderList:  "not one of this provider's known models",
+	msgUINoProviderModels:      "This provider currently has no known models",
+	msgUIModelFallbackHint:     "Using provider-inferred models (could not load this account's real list)",
+	msgUILabelModelSource:      "Account model source",
+	msgUIModelSourceConsole:    "Console API",
+	msgUIModelSourceProvider:   "Provider inference",
 }
 
 var messagesZhCN = map[msgKey]string{
@@ -428,6 +460,12 @@ var messagesZhCN = map[msgKey]string{
 	msgUIAdvancedSettings:      "高级设置",
 	msgUIExpand:                "展开",
 	msgUIModelAutoFull:         "自动选择",
+	msgModelNotInProviderList:  "不属于该 provider 的模型",
+	msgUINoProviderModels:      "该 provider 暂无可用模型",
+	msgUIModelFallbackHint:     "已按 provider 推断（未取到账号模型）",
+	msgUILabelModelSource:      "账号模型来源",
+	msgUIModelSourceConsole:    "控制台接口",
+	msgUIModelSourceProvider:   "provider 推断",
 }
 
 var messagesZhTW = map[msgKey]string{
@@ -549,6 +587,12 @@ var messagesZhTW = map[msgKey]string{
 	msgUIAdvancedSettings:      "進階設定",
 	msgUIExpand:                "展開",
 	msgUIModelAutoFull:         "自動選擇",
+	msgModelNotInProviderList:  "不屬於該 provider 的模型",
+	msgUINoProviderModels:      "該 provider 暫無可用模型",
+	msgUIModelFallbackHint:     "已按 provider 推斷（未取得帳號模型）",
+	msgUILabelModelSource:      "帳號模型來源",
+	msgUIModelSourceConsole:    "控制台介面",
+	msgUIModelSourceProvider:   "provider 推斷",
 }
 
 // messagesRU. Written as natural technical Russian, not a machine-translated
@@ -677,6 +721,12 @@ var messagesRU = map[msgKey]string{
 	msgUIAdvancedSettings:      "Дополнительные настройки",
 	msgUIExpand:                "Развернуть",
 	msgUIModelAutoFull:         "Автовыбор",
+	msgModelNotInProviderList:  "не входит в список моделей этого провайдера",
+	msgUINoProviderModels:      "У этого провайдера пока нет известных моделей",
+	msgUIModelFallbackHint:     "Используется вывод по provider (не удалось получить реальный список моделей аккаунта)",
+	msgUILabelModelSource:      "Источник моделей аккаунта",
+	msgUIModelSourceConsole:    "API консоли",
+	msgUIModelSourceProvider:   "Вывод по provider",
 }
 
 var messagesByLang = map[lang]map[msgKey]string{
