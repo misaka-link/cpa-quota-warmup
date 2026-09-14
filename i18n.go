@@ -91,7 +91,6 @@ const (
 	msgUIColTimes              msgKey = "ui_col_times"
 	msgUIColNextTrigger        msgKey = "ui_col_next_trigger"
 	msgUIColStatus             msgKey = "ui_col_status"
-	msgUIColActions            msgKey = "ui_col_actions"
 	msgUISectionRecent         msgKey = "ui_section_recent"
 	msgUIColDate               msgKey = "ui_col_date"
 	msgUIColTime               msgKey = "ui_col_time"
@@ -163,6 +162,18 @@ const (
 	msgUIConfigYAMLSave        msgKey = "ui_config_yaml_save"
 	msgUIConfigYAMLLoadFailed  msgKey = "ui_config_yaml_load_failed"
 	msgUIConfigYAMLEncodeError msgKey = "ui_config_yaml_encode_error"
+
+	// v0.6.0 additions: the redesigned accounts-table status column (a
+	// dedicated "Enabled" state word, distinct from msgUILabelEnabled which
+	// labels the column header itself) and the config section's collapsed
+	// "Advanced settings" <details>. msgUISetSaved/msgUISetFailed already
+	// existed (msgUISetSaved was declared and translated but never actually
+	// referenced anywhere in the template; msgUISetFailed was declared but
+	// had never been given translations in any of the four maps below --
+	// both are now wired up as the redesigned per-row inline
+	// saving/saved/failed indicator's text, see panel.go's flashRow).
+	msgUIStatusEnabled    msgKey = "ui_status_enabled"
+	msgUIAdvancedSettings msgKey = "ui_advanced_settings"
 )
 
 // messagesEN is the source-of-truth key set: every other language map is
@@ -225,7 +236,6 @@ var messagesEN = map[msgKey]string{
 	msgUIColTimes:              "Times",
 	msgUIColNextTrigger:        "Next trigger",
 	msgUIColStatus:             "Status",
-	msgUIColActions:            "Actions",
 	msgUISectionRecent:         "Recent results",
 	msgUIColDate:               "Date",
 	msgUIColTime:               "Time",
@@ -260,6 +270,7 @@ var messagesEN = map[msgKey]string{
 	msgUIModelPlaceholder: "Model",
 	msgUISetSaved:         "Saved",
 	msgUISetCleared:       "Cleared",
+	msgUISetFailed:        "Save failed",
 	msgUILabelMode:        "Mode",
 	msgUIModeFile:         "External file",
 	msgUIModeInline:       "Inline (legacy)",
@@ -282,6 +293,8 @@ var messagesEN = map[msgKey]string{
 	msgUIConfigYAMLSave:        "保存",
 	msgUIConfigYAMLLoadFailed:  "配置文件加载失败",
 	msgUIConfigYAMLEncodeError: "内容编码失败，请检查浏览器兼容性",
+	msgUIStatusEnabled:         "Enabled",
+	msgUIAdvancedSettings:      "Advanced settings",
 }
 
 var messagesZhCN = map[msgKey]string{
@@ -342,7 +355,6 @@ var messagesZhCN = map[msgKey]string{
 	msgUIColTimes:              "时间点",
 	msgUIColNextTrigger:        "下次触发",
 	msgUIColStatus:             "状态",
-	msgUIColActions:            "操作",
 	msgUISectionRecent:         "最近记录",
 	msgUIColDate:               "日期",
 	msgUIColTime:               "时刻",
@@ -377,6 +389,7 @@ var messagesZhCN = map[msgKey]string{
 	msgUIModelPlaceholder: "模型",
 	msgUISetSaved:         "已保存",
 	msgUISetCleared:       "已清除",
+	msgUISetFailed:        "保存失败",
 	msgUILabelMode:        "模式",
 	msgUIModeFile:         "独立文件",
 	msgUIModeInline:       "内联（旧版）",
@@ -399,6 +412,8 @@ var messagesZhCN = map[msgKey]string{
 	msgUIConfigYAMLSave:        "保存",
 	msgUIConfigYAMLLoadFailed:  "配置文件加载失败",
 	msgUIConfigYAMLEncodeError: "内容编码失败，请检查浏览器兼容性",
+	msgUIStatusEnabled:         "已启用",
+	msgUIAdvancedSettings:      "高级设置",
 }
 
 var messagesZhTW = map[msgKey]string{
@@ -459,7 +474,6 @@ var messagesZhTW = map[msgKey]string{
 	msgUIColTimes:              "時間點",
 	msgUIColNextTrigger:        "下次觸發",
 	msgUIColStatus:             "狀態",
-	msgUIColActions:            "操作",
 	msgUISectionRecent:         "最近記錄",
 	msgUIColDate:               "日期",
 	msgUIColTime:               "時刻",
@@ -494,6 +508,7 @@ var messagesZhTW = map[msgKey]string{
 	msgUIModelPlaceholder: "模型",
 	msgUISetSaved:         "已儲存",
 	msgUISetCleared:       "已清除",
+	msgUISetFailed:        "儲存失敗",
 	msgUILabelMode:        "模式",
 	msgUIModeFile:         "獨立檔案",
 	msgUIModeInline:       "內聯（舊版）",
@@ -516,6 +531,8 @@ var messagesZhTW = map[msgKey]string{
 	msgUIConfigYAMLSave:        "保存",
 	msgUIConfigYAMLLoadFailed:  "配置文件加载失败",
 	msgUIConfigYAMLEncodeError: "内容编码失败，请检查浏览器兼容性",
+	msgUIStatusEnabled:         "已啟用",
+	msgUIAdvancedSettings:      "進階設定",
 }
 
 // messagesRU. Written as natural technical Russian, not a machine-translated
@@ -583,7 +600,6 @@ var messagesRU = map[msgKey]string{
 	msgUIColTimes:              "Время",
 	msgUIColNextTrigger:        "Следующий запуск",
 	msgUIColStatus:             "Статус",
-	msgUIColActions:            "Действия",
 	msgUISectionRecent:         "Последние результаты",
 	msgUIColDate:               "Дата",
 	msgUIColTime:               "Время",
@@ -618,6 +634,7 @@ var messagesRU = map[msgKey]string{
 	msgUIModelPlaceholder: "Модель",
 	msgUISetSaved:         "Сохранено",
 	msgUISetCleared:       "Сброшено",
+	msgUISetFailed:        "Не удалось сохранить",
 	msgUILabelMode:        "Режим",
 	msgUIModeFile:         "Внешний файл",
 	msgUIModeInline:       "Встроенный (устаревший)",
@@ -640,6 +657,8 @@ var messagesRU = map[msgKey]string{
 	msgUIConfigYAMLSave:        "保存",
 	msgUIConfigYAMLLoadFailed:  "配置文件加载失败",
 	msgUIConfigYAMLEncodeError: "内容编码失败，请检查浏览器兼容性",
+	msgUIStatusEnabled:         "Включено",
+	msgUIAdvancedSettings:      "Дополнительные настройки",
 }
 
 var messagesByLang = map[lang]map[msgKey]string{

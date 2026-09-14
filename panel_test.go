@@ -55,14 +55,20 @@ func TestPanelTemplateStaticTextHasDataI18nAttributes(t *testing.T) {
 	}
 }
 
-// TestPanelTemplateHasActionsHeaderNotModelSourceHeader guards the v0.4.1
-// accounts-table column rework: the old dedicated "model source" column was
-// removed (its value now surfaces as the model input's title attribute
-// instead), and a new "Actions" column (holding the Save/Auto buttons that
-// used to be crammed into the status column) was added in its place.
-func TestPanelTemplateHasActionsHeaderNotModelSourceHeader(t *testing.T) {
-	if !strings.Contains(panelHTMLTemplate, `data-i18n="ui_col_actions"`) {
-		t.Errorf("expected panelHTMLTemplate to contain a data-i18n=\"ui_col_actions\" header, found none")
+// TestPanelTemplateHasNoActionsOrModelSourceHeader guards the accounts-table
+// column history: v0.4.1 removed the old dedicated "model source" column
+// (its value surfaces as the model input's title attribute instead) in favor
+// of a new "Actions" column holding Save/Auto buttons. v0.6.0 went further
+// and removed the Actions column too: every field now auto-saves itself on
+// change/blur/Enter (see panel.go's "change"/"keydown" delegation), so there
+// is no longer anything left to put in a dedicated actions column at all --
+// "自动"/Auto is now a small inline text button next to the model input
+// itself. This test's name and assertions were updated in lockstep with
+// that removal (a stale assertion insisting the now-intentionally-removed
+// column still exist would just force reintroducing dead UI clutter).
+func TestPanelTemplateHasNoActionsOrModelSourceHeader(t *testing.T) {
+	if strings.Contains(panelHTMLTemplate, "ui_col_actions") {
+		t.Errorf("expected panelHTMLTemplate to no longer contain a ui_col_actions header (the Actions column was removed in v0.6.0), but it does")
 	}
 	if strings.Contains(panelHTMLTemplate, "ui_col_model_source") {
 		t.Errorf("expected panelHTMLTemplate to no longer contain a ui_col_model_source header, but it does")

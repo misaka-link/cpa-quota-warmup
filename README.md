@@ -240,7 +240,7 @@ plugins:
 
 ```bash
 cd ~/cpa-plugins/cpa-quota-warmup
-scripts/build.sh                 # -> dist/cpa-quota-warmup-v0.5.1.so (+ .sha256)
+scripts/build.sh                 # -> dist/cpa-quota-warmup-v0.6.0.so (+ .sha256)
 sudo ops/merge-config.py         # 原地合并默认配置到 /var/lib/cli-proxy-api/config.yaml（保 inode）
                                   # sudo ops/merge-config.py --remove 可移除
 sudo ops/deploy                  # 安装 .so 到插件目录并重启 cli-proxy-api.service
@@ -257,7 +257,7 @@ sudo ops/deploy                  # 安装 .so 到插件目录并重启 cli-proxy
 go vet ./... && go test ./...
 
 # 2. 真 ABI 集成测试（不需要真实宿主/网络）
-python3 integration_abi_test.py dist/cpa-quota-warmup-v0.5.1.so
+python3 integration_abi_test.py dist/cpa-quota-warmup-v0.6.0.so
 
 # 3. 部署后看宿主日志（host.log 回调，前缀 [cpa-quota-warmup]）
 journalctl -u cli-proxy-api | rg 'cpa-quota-warmup'
@@ -400,3 +400,7 @@ curl -s "http://127.0.0.1:8317/v0/resource/plugins/cpa-quota-warmup/config-yaml/
 6. **实现过程中用真实测试挖出一个真 bug**：两次紧挨着（无人为延迟）的原子写（`os.CreateTemp` + `os.Rename`）在这台开发机的文件系统上会落在完全相同的纳秒级 `ModTime()` 上——如果直接拿 `ModTime()` 当 `mtime` token，会把一次真实的"文件在两次读写之间被改过"的冲突误判成"没变"，从而允许一次本该被拒绝的覆盖写入。用 ABI 集成测试（连续三次 `/config-yaml/save` 调用）实测复现后，改成 `ModTime + 本进程内写入序号` 拼接出的 token（见 `warmupfile.go` 的 `mtimeToken`/`writeSeq`），保证同一个 `warmupFileManager` 实例做的任意两次写永远返回不同 token；回归测试 `TestMtimeTokenDistinguishesWritesWithIdenticalModTime`/`TestOverwriteRawAlwaysProducesADistinctToken`。
 7. 新增/更新测试：`management_config_yaml_test.go`（读取内容/路径/mtime、含中文注释引号反斜杠井号多行的保存往返、CRLF 归一化、无效时间表达式的 400+line+column、畸形 YAML 语法的 400、过期 mtime 的 409 冲突、缺参数的 400、非文件模式下两个路由都是 501）、`warmupfile_test.go` 新增两条 mtime token 回归测试、`panel_test.go` 未新增（本次面板改动只是新增一个区块，未改动既有的 i18n 覆盖测试所覆盖的元素结构）。ABI 集成测试新增 `/config-yaml` 读、`/config-yaml/save` 保存成功、校验失败三条断言（外加一条 mtime 冲突的 409 断言），并把 `Resources` 路径的期望列表更新为 6 条（末尾追加 `/config-yaml`、`/config-yaml/save`）。
 8. `pluginVersion` 升到 `0.5.0`。
+
+## v0.6.0
+
+- 面板排版重做：沿用 CPA 管理控制台的主题变量（暖灰亮/暗两套），配置区改为摘要 chips + 折叠高级设置，账号表改为勾选/输入即自动保存（去掉保存按钮），时间格式化为 MM-DD HH:MM，最近记录用 ✓/✗，编辑器样式对齐控制台。
