@@ -130,11 +130,70 @@ func (s *httpChatSender) sendWarmup(ctx context.Context, req warmupSendRequest) 
 }
 
 // modelsListResponse is the relevant subset of GET /v1/models' OpenAI-shaped
-// response body: {"object":"list","data":[{"id":"...","object":"model",...}]}.
+// response body: {"object":"list","data":[{"id":"...","owned_by":"...",...}]}.
 type modelsListResponse struct {
 	Data []struct {
-		ID string `json:"id"`
+		ID      string `json:"id"`
+		OwnedBy string `json:"owned_by"`
 	} `json:"data"`
+}
+
+// modelInfo is one entry of a GET /v1/models listing, kept for display
+// purposes (the panel's model datalist groups options by OwnedBy).
+type modelInfo struct {
+	ID      string `json:"id"`
+	OwnedBy string `json:"owned_by,omitempty"`
+}
+
+// fetchModels performs the actual GET /v1/models call shared by
+// AvailableModels and ListModelsDetailed below.
+func (s *httpChatSender) fetchModels(ctx context.Context) (modelsListResponse, error) {
+	ctx, cancel := context.WithTimeout(ctx, modelsPrecheckTimeout)
+	defer cancel()
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, s.baseURL+modelsPath, nil)
+	if err != nil {
+		return modelsListResponse{}, fmt.Errorf("build models request: %w", err)
+	}
+	if s.apiKey != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+s.apiKey)
+	}
+
+	resp, err := s.client.Do(httpReq)
+	if err != nil {
+		return modelsListResponse{}, fmt.Errorf("models request: %w", err)
+	}
+	defer func() { _, _ = io.Copy(io.Discard, resp.Body); _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return modelsListResponse{}, fmt.Errorf("models request: unexpected status %d", resp.StatusCode)
+	}
+
+	var parsed modelsListResponse
+	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
+		return modelsListResponse{}, fmt.Errorf("decode models response: %w", err)
+	}
+	return parsed, nil
+}
+
+// ListModelsDetailed returns every model GET /v1/models currently lists,
+// with its owned_by label, for the panel's model picker (status route's
+// available_models). Unlike AvailableModels, callers here typically want to
+// distinguish "list is empty" from "list is unavailable", so this returns
+// (nil, err) rather than treating a failure as "the empty set".
+func (s *httpChatSender) ListModelsDetailed(ctx context.Context) ([]modelInfo, error) {
+	parsed, err := s.fetchModels(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]modelInfo, 0, len(parsed.Data))
+	for _, m := range parsed.Data {
+		id := strings.TrimSpace(m.ID)
+		if id == "" {
+			continue
+		}
+		out = append(out, modelInfo{ID: id, OwnedBy: strings.TrimSpace(m.OwnedBy)})
+	}
+	return out, nil
 }
 
 // AvailableModels calls this CPA instance's own GET /v1/models with the same
@@ -144,29 +203,9 @@ type modelsListResponse struct {
 // transient failure to list models must never block a warmup request that
 // would otherwise have gone out.
 func (s *httpChatSender) AvailableModels(ctx context.Context) (map[string]bool, error) {
-	ctx, cancel := context.WithTimeout(ctx, modelsPrecheckTimeout)
-	defer cancel()
-
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, s.baseURL+modelsPath, nil)
+	parsed, err := s.fetchModels(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("build models request: %w", err)
-	}
-	if s.apiKey != "" {
-		httpReq.Header.Set("Authorization", "Bearer "+s.apiKey)
-	}
-
-	resp, err := s.client.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("models request: %w", err)
-	}
-	defer func() { _, _ = io.Copy(io.Discard, resp.Body); _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("models request: unexpected status %d", resp.StatusCode)
-	}
-
-	var parsed modelsListResponse
-	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
-		return nil, fmt.Errorf("decode models response: %w", err)
+		return nil, err
 	}
 	out := make(map[string]bool, len(parsed.Data))
 	for _, m := range parsed.Data {

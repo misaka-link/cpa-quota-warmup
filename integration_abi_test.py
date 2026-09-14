@@ -91,6 +91,17 @@ def decode_management(result: dict) -> tuple[int, dict, bytes]:
 
 
 BASE_CONFIG = """
+enabled: true
+time: "05:30"
+model: "auto"
+accounts: ["antigravity-*"]
+advanced:
+  message: "hi"
+"""
+
+# LEGACY_CONFIG exercises the pre-v0.3.0 top-level shape, which must still
+# parse (and be detected as legacy) unchanged.
+LEGACY_CONFIG = """
 timezone: "UTC"
 message: "hi"
 providers:
@@ -123,8 +134,11 @@ def main() -> None:
         plugin_id = registration["metadata"]["Name"]
         if plugin_id != "cpa-quota-warmup":
             raise AssertionError(f"unexpected plugin metadata name: {plugin_id}")
-        if not registration["metadata"]["ConfigFields"]:
-            raise AssertionError("no config fields advertised to the management UI")
+        # v0.3.0 reduced ConfigFields to exactly these 5 entries (enabled/
+        # time/model/accounts/advanced) -- see main.go's registrationPayload.
+        field_names = [f["Name"] for f in registration["metadata"]["ConfigFields"]]
+        if field_names != ["enabled", "time", "model", "accounts", "advanced"]:
+            raise AssertionError(f"unexpected ConfigFields names: {field_names}")
 
         mgmt_routes = invoke(
             plugin,
@@ -137,9 +151,9 @@ def main() -> None:
         )
         resources = mgmt_routes["Resources"]
         paths = [item["Path"] for item in resources]
-        if paths != ["/panel", "/status", "/run"]:
+        if paths != ["/panel", "/status", "/run", "/set"]:
             raise AssertionError(f"unexpected resource paths: {paths}")
-        if not resources[0]["Menu"] or resources[1].get("Menu") or resources[2].get("Menu"):
+        if not resources[0]["Menu"] or any(r.get("Menu") for r in resources[1:]):
             raise AssertionError("only the panel route may carry a menu label")
 
         # The panel page must render as a self-contained HTML document that
@@ -199,6 +213,24 @@ def main() -> None:
             # than silently reporting zero auths.
             raise AssertionError(f"expected auths_error with no host wired up: {payload}")
 
+        # v0.3.0: the new minimal config's time/model/accounts/legacy_mode
+        # must round-trip into the status JSON, and available_models must be
+        # present (an empty list is fine -- there is no real CPA listening
+        # at the configured base-url in this sandboxed test).
+        cfg_summary = payload["config"]
+        if cfg_summary.get("time") != ["05:30"]:
+            raise AssertionError(f"unexpected config.time: {cfg_summary}")
+        if cfg_summary.get("model") != "auto":
+            raise AssertionError(f"unexpected config.model: {cfg_summary}")
+        if cfg_summary.get("accounts") != ["antigravity-*"]:
+            raise AssertionError(f"unexpected config.accounts: {cfg_summary}")
+        if cfg_summary.get("legacy_mode"):
+            raise AssertionError(f"expected legacy_mode=false for the new-format config: {cfg_summary}")
+        if not cfg_summary.get("timezone_auto"):
+            raise AssertionError(f"expected timezone_auto=true when advanced.timezone is unset: {cfg_summary}")
+        if "available_models" not in payload or not isinstance(payload["available_models"], list):
+            raise AssertionError(f"expected available_models to be a list, got {payload.get('available_models')!r}")
+
         # The run route degrades the same way: no host.auth.list means no
         # accounts to trigger, surfaced as a 500 with an error body rather
         # than a crash or a hang.
@@ -232,6 +264,73 @@ def main() -> None:
         payload = json.loads(body)
         if payload["config"]["message"] != "yo":
             raise AssertionError(f"reconfigure did not take effect: {payload['config']}")
+
+        # /set: an invalid scope and a missing model are both rejected with
+        # a 400 before ever touching overrides.json.
+        set_status, _, set_body = decode_management(
+            invoke(
+                plugin,
+                "management.handle",
+                management_request(f"/v0/resource/plugins/{plugin_id}/set", {"scope": "bogus", "model": "x"}),
+            )
+        )
+        if set_status != 400:
+            raise AssertionError(f"expected 400 for an invalid scope, got {set_status} body={set_body!r}")
+
+        # A valid scope=global set: there is no real CPA at the configured
+        # base-url in this sandboxed test, so the GET /v1/models precheck
+        # itself fails -- per spec that must not block saving, only add a
+        # warning to the response.
+        set_status, _, set_body = decode_management(
+            invoke(
+                plugin,
+                "management.handle",
+                management_request(
+                    f"/v0/resource/plugins/{plugin_id}/set",
+                    {"scope": "global", "model": "gemini-3.7-flash-high", "lang": "zh-TW"},
+                ),
+            )
+        )
+        if set_status != 200:
+            raise AssertionError(f"expected 200 for a global set, got {set_status} body={set_body!r}")
+        set_payload = json.loads(set_body)
+        if set_payload.get("lang") != "zh-TW" or not set_payload.get("warning"):
+            raise AssertionError(f"expected a precheck-failed warning with lang=zh-TW: {set_payload}")
+
+        # The override must be visible through status (as model_source
+        # "panel"), and host.auth.list has no real entries in this
+        # sandboxed test, so "auths" itself stays empty -- the coverage
+        # that matters here is that the route round-trips through the
+        # overrides store without erroring.
+        status, _, body = decode_management(
+            invoke(plugin, "management.handle", management_request(f"/v0/resource/plugins/{plugin_id}/status"))
+        )
+        payload = json.loads(body)
+        if not payload.get("auths_error"):
+            raise AssertionError(f"expected auths_error to persist after /set: {payload}")
+
+        # model=auto clears the override rather than failing.
+        set_status, _, set_body = decode_management(
+            invoke(
+                plugin,
+                "management.handle",
+                management_request(f"/v0/resource/plugins/{plugin_id}/set", {"scope": "global", "model": "auto"}),
+            )
+        )
+        if set_status != 200:
+            raise AssertionError(f"expected 200 clearing the global override, got {set_status} body={set_body!r}")
+
+        # The legacy (pre-v0.3.0) config shape must still register cleanly
+        # and be detected as legacy in the status JSON.
+        legacy_reconfigured = invoke(plugin, "plugin.reconfigure", register_request(LEGACY_CONFIG))
+        if legacy_reconfigured["metadata"]["Name"] != plugin_id:
+            raise AssertionError("reconfigure (legacy) returned unexpected metadata")
+        status, _, body = decode_management(
+            invoke(plugin, "management.handle", management_request(f"/v0/resource/plugins/{plugin_id}/status"))
+        )
+        payload = json.loads(body)
+        if not payload["config"].get("legacy_mode"):
+            raise AssertionError(f"expected legacy_mode=true after reconfiguring with the legacy shape: {payload['config']}")
 
         invoke(plugin, "plugin.quiesce", {})
 

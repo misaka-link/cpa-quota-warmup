@@ -2,3 +2,5 @@
 *.so
 *.h
 *.sha256
+/cpa-quota-warmup
+/quota-warmup/

@@ -10,35 +10,9 @@ import sys
 
 BLOCK = """    cpa-quota-warmup:
       enabled: true
-      priority: 1
-      log: true
-      timezone: "Asia/Shanghai"
-      base-url: "http://127.0.0.1:8317"
-      api-key: ""
-      message: "hi"
-      max-tokens: 16
-      max-rounds: 3
-      catch-up-minutes: 60
-      default:
-        enabled: false        # 默认不预热；只对下面 auths 里显式打开的账号生效
-        times: ["05:30"]
-      providers:
-        # Model names below are only valid where this instance's own
-        # GET /v1/models actually lists them -- see README "已知限制"/宿主事实核实.
-        # The plugin also prechecks each one against GET /v1/models itself
-        # before sending, so a stale entry here degrades to a skip+warning
-        # rather than a 404 against the account.
-        antigravity: { model: "gemini-3.7-flash-high" }
-        codex:       { model: "gpt-5.6-luna", reasoning-effort: "low" }
-        kimi:        { model: "kimi-k2.8" }
-        xai:         { model: "grok-4.6" }
-        claude:      { model: "claude-haiku-4-5-20251001" }
-        gemini-cli:  { model: "gemini-2.5-flash-lite" }
-        aistudio:    { model: "gemini-2.5-flash-lite" }
-        vertex:      { model: "gemini-2.5-flash-lite" }
-      auths:
-        - match: "codex-*-team.json"   # 两个 codex team 账号
-          enabled: true
+      time: "05:30"                    # 每天几点预热：写 "05:30"，多个写 "05:30, 10:30"，或直接写 cron "30 5,10,15,20 * * *"
+      model: "auto"                    # 预热用的模型；auto = 自动选各 provider 最便宜的；也可直接写模型名，如 gpt-5.6-luna
+      accounts: ["codex-*-team.json"]  # 要预热的认证文件名，支持 * 通配；写 "*" 表示全部账号
 """
 
 path = next((a for a in sys.argv[1:] if not a.startswith('--')), '/var/lib/cli-proxy-api/config.yaml')

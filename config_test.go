@@ -5,12 +5,22 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
+// TestDecodeConfigDefaults documents the v0.3.0 default: with no config at
+// all (no legacy-only key present), decodeConfig produces the new minimal
+// format's defaults, not the legacy ones -- timezone auto-follows the host
+// process (time.Local), accounts defaults to empty (warm up nothing), and
+// model defaults to "auto". See TestDecodeConfigLegacyDefaults below for the
+// old-format equivalent of this test.
 func TestDecodeConfigDefaults(t *testing.T) {
 	cfg, err := decodeConfig(nil)
 	if err != nil {
 		t.Fatalf("decodeConfig(nil): %v", err)
+	}
+	if cfg.legacyMode {
+		t.Fatalf("expected an empty config to be treated as the new format")
 	}
 	if !cfg.Enabled || !cfg.Log {
 		t.Fatalf("expected enabled+log defaults true, got %+v", cfg)
@@ -24,12 +34,45 @@ func TestDecodeConfigDefaults(t *testing.T) {
 	if cfg.MaxTokens != defaultMaxTokens || cfg.MaxRounds != defaultMaxRounds || cfg.CatchUpMinutes != defaultCatchUpMinutes {
 		t.Fatalf("unexpected numeric defaults: %+v", cfg)
 	}
+	if len(cfg.TimeRaw) != 1 || cfg.TimeRaw[0] != defaultTime {
+		t.Fatalf("TimeRaw = %v, want [%s]", cfg.TimeRaw, defaultTime)
+	}
+	if len(cfg.Accounts) != 0 {
+		t.Fatalf("Accounts = %v, want empty (warm up nothing by default)", cfg.Accounts)
+	}
+	if cfg.Model.Scalar != "" || len(cfg.Model.Map) != 0 {
+		t.Fatalf("Model = %+v, want the zero value (auto)", cfg.Model)
+	}
+	if cfg.location == nil || cfg.location != timeLocalForTest(t) {
+		t.Fatalf("location = %v, want time.Local", cfg.location)
+	}
+}
+
+// TestDecodeConfigLegacyDefaults is the pre-v0.3.0 behavior, preserved
+// exactly: any config containing at least one legacy-only top-level key
+// (here just `timezone:`) is resolved the old way.
+func TestDecodeConfigLegacyDefaults(t *testing.T) {
+	raw := lifecycleRequestJSON(t, []byte("timezone: \"Asia/Shanghai\"\n"))
+	cfg, err := decodeConfig(raw)
+	if err != nil {
+		t.Fatalf("decodeConfig: %v", err)
+	}
+	if !cfg.legacyMode {
+		t.Fatalf("expected a bare `timezone:` key to be detected as legacy")
+	}
 	if len(cfg.Default.Times) != 1 || cfg.Default.Times[0] != defaultTime {
 		t.Fatalf("Default.Times = %v, want [%s]", cfg.Default.Times, defaultTime)
 	}
 	if cfg.location == nil || cfg.location.String() != "Asia/Shanghai" {
 		t.Fatalf("location = %v, want Asia/Shanghai", cfg.location)
 	}
+}
+
+// timeLocalForTest resolves what decodeConfig's "" timezone sentinel
+// resolves to (time.Local), for comparison in TestDecodeConfigDefaults.
+func timeLocalForTest(t *testing.T) *time.Location {
+	t.Helper()
+	return time.Local
 }
 
 func TestDecodeConfigFromSpecExample(t *testing.T) {

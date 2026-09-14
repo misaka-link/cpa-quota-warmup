@@ -219,6 +219,9 @@ const panelHTMLTemplate = `<!doctype html>
     font: inherit; font-size: 13px; padding: 7px 10px; border-radius: 6px;
     border: 1px solid var(--border); background: var(--panel); color: var(--text); min-width: 220px;
   }
+  .model-edit { display: inline-flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  .model-edit input[type="text"] { min-width: 150px; }
+  .model-edit .ghost-btn { padding: 5px 10px; }
   section.block { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px; margin-bottom: 16px; box-shadow: var(--shadow); }
   .block-head { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; margin-bottom: 14px; }
   .block-head h2 { margin: 0; font-size: 15px; font-weight: 620; }
@@ -271,11 +274,12 @@ const panelHTMLTemplate = `<!doctype html>
     </div>
     <div class="scroll"><table id="accountsTable">
       <thead><tr>
-        <th data-i18n="ui_col_name">{{ui_col_name}}</th><th data-i18n="ui_col_provider">{{ui_col_provider}}</th><th data-i18n="ui_col_model">{{ui_col_model}}</th>
+        <th data-i18n="ui_col_name">{{ui_col_name}}</th><th data-i18n="ui_col_provider">{{ui_col_provider}}</th><th data-i18n="ui_col_model">{{ui_col_model}}</th><th data-i18n="ui_col_model_source">{{ui_col_model_source}}</th>
         <th data-i18n="ui_col_times">{{ui_col_times}}</th><th data-i18n="ui_col_next_trigger">{{ui_col_next_trigger}}</th><th data-i18n="ui_col_status">{{ui_col_status}}</th>
       </tr></thead>
-      <tbody><tr><td colspan="6" class="empty" data-i18n="ui_loading">{{ui_loading}}</td></tr></tbody>
+      <tbody><tr><td colspan="7" class="empty" data-i18n="ui_loading">{{ui_loading}}</td></tr></tbody>
     </table></div>
+    <datalist id="model-options"></datalist>
     <div id="runResult" hidden>
       <h3 data-i18n="ui_run_result_title">{{ui_run_result_title}}</h3>
       <div id="runResultBody"></div>
@@ -341,32 +345,135 @@ const panelHTMLTemplate = `<!doctype html>
     if (msg) { box.textContent = msg; box.hidden = false; } else { box.hidden = true; }
   }
 
+  // modelEditorHTML builds the "<input list=model-options> + Save + Auto"
+  // control used both for the config table's global-model row and for each
+  // account row's model cell. currentValue "auto" (or empty) leaves the
+  // input blank -- the placeholder communicates that auto-selection is in
+  // effect -- so a beginner can never accidentally type the literal word
+  // "auto" into a real model name field.
+  function modelEditorHTML(scope, authName, currentValue) {
+    var attrs = 'data-scope="' + esc(scope) + '" data-auth="' + esc(authName || "") + '"';
+    var value = (!currentValue || currentValue === "auto") ? "" : currentValue;
+    return '<span class="model-edit">' +
+      '<input type="text" list="model-options" class="model-input" ' + attrs +
+      ' value="' + esc(value) + '" placeholder="' + esc(t("ui_model_placeholder")) + '">' +
+      '<button type="button" class="ghost-btn model-save-btn" ' + attrs + '>' + esc(t("ui_model_save")) + '</button>' +
+      '<button type="button" class="ghost-btn model-auto-btn" ' + attrs + '>' + esc(t("ui_model_auto")) + '</button>' +
+      '</span>';
+  }
+
+  // populateModelOptions fills the shared <datalist> from status'
+  // available_models, grouped by owned_by so the dropdown at least hints at
+  // which provider each id belongs to. A model not in this list can still
+  // be typed freely -- the datalist is a convenience, not a whitelist; the
+  // server itself validates against the live list when "保存"/Save is
+  // clicked.
+  function populateModelOptions(models) {
+    var list = models || [];
+    var groups = {}, order = [];
+    list.forEach(function (m) {
+      var g = m.owned_by || "";
+      if (!groups[g]) { groups[g] = []; order.push(g); }
+      groups[g].push(m.id);
+    });
+    var html = order.map(function (g) {
+      var options = groups[g].map(function (id) { return '<option value="' + esc(id) + '">'; }).join("");
+      return g ? ('<optgroup label="' + esc(g) + '">' + options + '</optgroup>') : options;
+    }).join("");
+    var el = document.getElementById("model-options");
+    if (el) { el.innerHTML = html; }
+  }
+
   function renderConfig(cfg) {
     cfg = cfg || {};
+    var timezoneLine = esc(cfg.timezone) || dash();
+    if (cfg.timezone_auto) {
+      timezoneLine += " (" + esc(t("ui_timezone_auto")) + ")";
+    } else if (!cfg.legacy_mode) {
+      timezoneLine += " (" + esc(t("ui_timezone_manual")) + ")";
+    }
     var rows = [
       [t("ui_label_enabled"), boolText(cfg.enabled)],
-      [t("ui_label_timezone"), esc(cfg.timezone) || dash()],
+      [t("ui_label_time"), esc((cfg.time || []).join(", ")) || dash()]
+    ];
+    if (!cfg.legacy_mode) {
+      var accountsValue = (cfg.accounts && cfg.accounts.length)
+        ? esc(cfg.accounts.join(", "))
+        : ('<span class="warn-text">' + esc(t("ui_no_accounts_hint")) + '</span>');
+      rows.push([t("ui_label_accounts"), accountsValue]);
+    }
+    rows = rows.concat([
+      [t("ui_label_timezone"), timezoneLine],
+      [t("ui_label_language"), esc(cfg.language) || dash()],
       [t("ui_label_base_url"), esc(cfg.base_url) || dash()],
       [t("ui_label_message"), esc(cfg.message) || dash()],
       [t("ui_label_max_tokens"), esc(cfg.max_tokens)],
       [t("ui_label_max_rounds"), esc(cfg.max_rounds)],
       [t("ui_label_catch_up_minutes"), esc(cfg.catch_up_minutes)]
-    ];
-    document.getElementById("configTable").innerHTML = rows.map(function (r) {
+    ]);
+    var html = rows.map(function (r) {
       return "<tr><th>" + esc(r[0]) + "</th><td>" + r[1] + "</td></tr>";
     }).join("");
+    if (!cfg.legacy_mode) {
+      html += "<tr><th>" + esc(t("ui_label_global_model")) + "</th><td>" + modelEditorHTML("global", "", cfg.model) + "</td></tr>";
+    }
+    document.getElementById("configTable").innerHTML = html;
   }
 
   function renderAccounts(auths) {
     var rows = auths || [];
     var body = rows.map(function (a) {
       var status = a.skipped ? ('<span class="warn-text">' + esc(a.skipped) + '</span>') : boolText(a.enabled);
+      var modelCell = a.enabled ? modelEditorHTML("auth", a.name, a.model) : (esc(a.model) || dash());
       return "<tr><td>" + esc(a.name) + "</td><td>" + esc(a.provider || "") + "</td><td>" +
-        (esc(a.model) || dash()) + "</td><td>" + esc((a.times || []).join(", ")) + "</td><td>" +
+        modelCell + "</td><td>" + esc(a.model_source || "") + "</td><td>" + esc((a.times || []).join(", ")) + "</td><td>" +
         (esc(a.next_trigger) || dash()) + "</td><td>" + status + "</td></tr>";
     }).join("");
-    document.querySelector("#accountsTable tbody").innerHTML = body || ('<tr><td colspan="6" class="empty">' + dash() + '</td></tr>');
+    document.querySelector("#accountsTable tbody").innerHTML = body || ('<tr><td colspan="7" class="empty">' + dash() + '</td></tr>');
   }
+
+  // setModel calls the /set route to pin (a real model id) or clear
+  // (model="auto") one account's (or, for scope="global", every account's)
+  // warmup model, then reloads so the change is reflected immediately.
+  function setModel(scope, authName, model) {
+    var url = base + "set?lang=" + encodeURIComponent(lang) + "&scope=" + encodeURIComponent(scope) + "&model=" + encodeURIComponent(model || "auto");
+    if (authName) { url += "&auth=" + encodeURIComponent(authName); }
+    fetch(url, { cache: "no-store" })
+      .then(function (resp) { return resp.json().then(function (body) { return { ok: resp.ok, body: body }; }); })
+      .then(function (res) {
+        if (!res.ok) {
+          showError((res.body && res.body.error) || t("ui_set_failed"));
+          return;
+        }
+        showError(res.body && res.body.warning ? res.body.warning : "");
+        load();
+      })
+      .catch(function () { showError(t("ui_set_failed")); });
+  }
+
+  // Event delegation: the config/accounts tables are fully re-rendered on
+  // every load(), so listeners are attached once here rather than re-bound
+  // per row.
+  document.addEventListener("click", function (event) {
+    var saveBtn = event.target.closest(".model-save-btn");
+    var autoBtn = event.target.closest(".model-auto-btn");
+    var btn = saveBtn || autoBtn;
+    if (!btn) { return; }
+    var scope = btn.getAttribute("data-scope");
+    var authName = btn.getAttribute("data-auth");
+    if (autoBtn) {
+      setModel(scope, authName, "auto");
+      return;
+    }
+    var wrapper = btn.closest(".model-edit");
+    var input = wrapper ? wrapper.querySelector(".model-input") : null;
+    var model = input ? input.value.trim() : "";
+    if (!model) {
+      showError(t("ui_set_failed"));
+      return;
+    }
+    setModel(scope, authName, model);
+  });
 
   function renderRecent(recent) {
     var rows = recent || [];
@@ -385,6 +492,7 @@ const panelHTMLTemplate = `<!doctype html>
       .then(function (resp) { return resp.json().then(function (body) { return { ok: resp.ok, body: body }; }); })
       .then(function (res) {
         if (!res.ok) { showError(t("ui_load_failed")); return; }
+        populateModelOptions(res.body.available_models);
         renderConfig(res.body.config);
         renderAccounts(res.body.auths);
         renderRecent(res.body.recent);

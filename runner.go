@@ -111,6 +111,100 @@ func unavailableModelWarning(l lang, model string) string {
 	return tr(l, msgModelNotExposed, model)
 }
 
+// modelUnavailableWarning is unavailableModelWarning's new-format
+// counterpart: t.Model is empty for a due target whose "auto" candidate-list
+// resolution found nothing live (see resolveAutoModels), in which case there
+// is no single model name to report -- msgNoCandidateModelAvailable names
+// the provider's whole candidate list instead.
+func modelUnavailableWarning(l lang, t dueTarget) string {
+	if strings.TrimSpace(t.Model) == "" {
+		return tr(l, msgNoCandidateModelAvailable, t.Provider)
+	}
+	return unavailableModelWarning(l, t.Model)
+}
+
+// groupDueTargetsNew is the new-format (v0.3.0) equivalent of
+// groupDueTargets: it resolves each host auth against accounts[]/time/model
+// (resolveNewAuth in config.go), evaluates its cron/HH:MM expression(s)
+// against now, and returns due targets grouped by provider. A due target's
+// Model is left empty when its resolution tier was "auto" -- see
+// resolveAutoModels, which must run after GET /v1/models has been
+// attempted, since the actual candidate can only be picked once the live
+// model list (or its absence) is known.
+func groupDueTargetsNew(entries []pluginapi.HostAuthFileEntry, cfg pluginConfig, ov modelOverrides, now time.Time, catchUp time.Duration, state *stateStore) (groups map[string][]dueTarget, invalidExprs []string) {
+	groups = make(map[string][]dueTarget)
+	seen := make(map[string]bool)
+	for _, entry := range entries {
+		if entry.Disabled || entry.Unavailable {
+			continue
+		}
+		name := strings.TrimSpace(entry.Name)
+		if name == "" {
+			continue
+		}
+		res := resolveNewAuth(cfg, ov, name, entry.Provider)
+		if !res.Selected {
+			continue
+		}
+		exprs, invalid := parseTimeExprs(res.TimeRaw)
+		for _, bad := range invalid {
+			invalidExprs = append(invalidExprs, fmt.Sprintf("%s: %q", name, bad))
+		}
+		provider := strings.ToLower(strings.TrimSpace(entry.Provider))
+		for _, expr := range exprs {
+			slot, due := expr.lastTriggerAtOrBefore(now, cfg.location, catchUp)
+			if !due {
+				continue
+			}
+			hhmm := slot.Format("15:04")
+			dateKey := slotDateKey(slot, cfg.location)
+			dedupKey := name + "|" + dateKey + "|" + hhmm
+			if seen[dedupKey] || state.isRecorded(name, dateKey, hhmm) {
+				continue
+			}
+			seen[dedupKey] = true
+			groups[provider] = append(groups[provider], dueTarget{
+				Name:            name,
+				AuthID:          entry.ID,
+				Provider:        provider,
+				Model:           res.ModelSpec, // "" means auto -- resolved by resolveAutoModels
+				ReasoningEffort: res.ReasoningEffort,
+				HHMM:            hhmm,
+				SlotAt:          slot,
+				DateKey:         dateKey,
+			})
+		}
+	}
+	return groups, invalidExprs
+}
+
+// resolveAutoModels fills in the Model field for every due target whose
+// resolution tier was "auto" (Model == ""), using the provider's built-in
+// candidate list (candidates.go) against the live GET /v1/models result.
+// precheckOK indicates whether that call itself succeeded (even with zero
+// models) -- see selectModel for the fallback-to-candidate[0] behavior when
+// it did not. Targets with an already-explicit Model pass through
+// unchanged (their own live-availability check happens afterwards, via the
+// same filterUnavailableModels the legacy path uses).
+func resolveAutoModels(groups map[string][]dueTarget, available map[string]bool, precheckOK bool) (resolved map[string][]dueTarget, unresolved []dueTarget) {
+	resolved = make(map[string][]dueTarget, len(groups))
+	for provider, targets := range groups {
+		for _, t := range targets {
+			if strings.TrimSpace(t.Model) != "" {
+				resolved[provider] = append(resolved[provider], t)
+				continue
+			}
+			if model, ok := selectModel(provider, available, precheckOK); ok {
+				t.Model = model
+				resolved[provider] = append(resolved[provider], t)
+			} else {
+				unresolved = append(unresolved, t)
+			}
+		}
+	}
+	return resolved, unresolved
+}
+
 // roundOutcome is what a warmup round loop learned about one due target.
 type roundOutcome struct {
 	Covered    bool
@@ -238,6 +332,7 @@ type engine struct {
 	settings   atomic.Pointer[pluginConfig]
 	ring       *usageRing
 	state      *stateStore
+	overrides  *overridesStore
 	auths      authLister
 	newSender  func(baseURL, apiKey string) warmupClient
 	ctx        context.Context
@@ -260,16 +355,27 @@ type hostAuthLister struct{}
 
 func (hostAuthLister) ListAuths() ([]pluginapi.HostAuthFileEntry, error) { return hostAuthList() }
 
-func newEngine(cfg pluginConfig, state *stateStore, auths authLister) *engine {
+func newEngine(cfg pluginConfig, state *stateStore, overrides *overridesStore, auths authLister) *engine {
 	e := &engine{
 		ring:       newUsageRing(),
 		state:      state,
+		overrides:  overrides,
 		auths:      auths,
 		newSender:  func(baseURL, apiKey string) warmupClient { return newHTTPChatSender(baseURL, apiKey) },
 		manualLast: map[string]time.Time{},
 	}
 	e.settings.Store(&cfg)
 	return e
+}
+
+// overridesSnapshot returns the current panel model-override state, or the
+// zero value if this engine was built without an overrides store (e.g. some
+// older/simplified test helpers).
+func (e *engine) overridesSnapshot() modelOverrides {
+	if e.overrides == nil {
+		return modelOverrides{}
+	}
+	return e.overrides.snapshot()
 }
 
 func (e *engine) start() {
@@ -323,6 +429,15 @@ func (e *engine) tick() {
 		return
 	}
 
+	if cfg.legacyMode {
+		e.tickLegacy(cfg, l, entries)
+	} else {
+		e.tickNew(cfg, l, entries)
+	}
+}
+
+// tickLegacy is the pre-v0.3.0 scheduling/model-resolution flow, unchanged.
+func (e *engine) tickLegacy(cfg pluginConfig, l lang, entries []pluginapi.HostAuthFileEntry) {
 	catchUp := time.Duration(cfg.CatchUpMinutes) * time.Minute
 	now := time.Now().In(cfg.location)
 	groups, skippedNoModel := groupDueTargets(entries, cfg, now, catchUp, e.state)
@@ -398,6 +513,100 @@ func (e *engine) tick() {
 	}
 }
 
+// tickNew is the v0.3.0 scheduling/model-resolution flow: accounts[]/time
+// cron-based due detection (groupDueTargetsNew), then candidate-list
+// auto-model-selection against a live GET /v1/models (resolveAutoModels),
+// then the same explicit-model precheck filter the legacy path uses
+// (filterUnavailableModels), then the same send/coverage/persist loop.
+func (e *engine) tickNew(cfg pluginConfig, l lang, entries []pluginapi.HostAuthFileEntry) {
+	if len(cfg.Accounts) == 0 {
+		if cfg.Log {
+			hostLog("info", tr(l, msgNoAccountsConfigured))
+		}
+		return
+	}
+	catchUp := time.Duration(cfg.CatchUpMinutes) * time.Minute
+	now := time.Now().In(cfg.location)
+	ov := e.overridesSnapshot()
+	groups, invalidExprs := groupDueTargetsNew(entries, cfg, ov, now, catchUp, e.state)
+	for _, w := range invalidExprs {
+		if cfg.Log {
+			hostLog("warn", tr(l, msgInvalidTimeExpr, w))
+		}
+	}
+	if len(groups) == 0 {
+		return
+	}
+
+	apiKey, err := resolveAPIKey(cfg)
+	if err != nil {
+		hostLog("error", tr(l, msgAPIKeyResolveFailed, len(groups), err))
+		return
+	}
+	sender := e.newSender(cfg.BaseURL, apiKey)
+
+	available, errModels := sender.AvailableModels(e.ctx)
+	precheckOK := errModels == nil
+	if !precheckOK && cfg.Log {
+		hostLog("warn", tr(l, msgModelPrecheckFailed, errModels))
+	}
+	resolvedGroups, autoUnresolved := resolveAutoModels(groups, available, precheckOK)
+	sendGroups := resolvedGroups
+	var explicitUnavailable []dueTarget
+	if precheckOK {
+		sendGroups, explicitUnavailable = filterUnavailableModels(resolvedGroups, available)
+	}
+	unavailable := append(append([]dueTarget(nil), autoUnresolved...), explicitUnavailable...)
+	for _, t := range unavailable {
+		warning := modelUnavailableWarning(l, t)
+		rec := slotRecord{
+			Auth:        t.Name,
+			Date:        t.DateKey,
+			Time:        t.HHMM,
+			Provider:    t.Provider,
+			Model:       t.Model,
+			TriggeredAt: t.SlotAt,
+			Covered:     false,
+			Warning:     warning,
+		}
+		if err := e.state.record(rec, now, cfg.location); err != nil && cfg.Log {
+			hostLog("error", tr(l, msgStatePersistFailed, t.Name, t.HHMM, err))
+		}
+		if cfg.Log {
+			hostLog("warn", tr(l, msgAuthModelUnavailable, t.Name, t.Provider, t.Model, t.HHMM, warning))
+		}
+	}
+
+	for provider, targets := range sendGroups {
+		outcomes := runProviderGroup(e.ctx, sender, e.ring, l, cfg.Message, cfg.MaxTokens, cfg.MaxRounds, targets)
+		for _, t := range targets {
+			outcome := outcomes[t.Name]
+			rec := slotRecord{
+				Auth:        t.Name,
+				Date:        t.DateKey,
+				Time:        t.HHMM,
+				Provider:    provider,
+				Model:       t.Model,
+				TriggeredAt: t.SlotAt,
+				Covered:     outcome.Covered,
+				Rounds:      outcome.Rounds,
+				StatusCode:  outcome.StatusCode,
+				Warning:     outcome.Warning,
+			}
+			if err := e.state.record(rec, now, cfg.location); err != nil && cfg.Log {
+				hostLog("error", tr(l, msgStatePersistFailed, t.Name, t.HHMM, err))
+			}
+			if cfg.Log {
+				if outcome.Covered {
+					hostLog("info", tr(l, msgWarmedAccount, t.Name, provider, t.Model, t.HHMM, outcome.StatusCode, outcome.Rounds))
+				} else {
+					hostLog("warn", tr(l, msgWarmupDidNotCover, t.Name, provider, t.Model, t.HHMM, outcome.Warning))
+				}
+			}
+		}
+	}
+}
+
 // manualRunResult is what management.go's run route reports back.
 type manualRunResult struct {
 	Lang      string                  `json:"lang"`
@@ -416,6 +625,14 @@ type manualRunResult struct {
 // negotiate from.
 func (e *engine) manualTrigger(ctx context.Context, authGlob string, l lang) (manualRunResult, error) {
 	cfg := e.config()
+	if cfg.legacyMode {
+		return e.manualTriggerLegacy(ctx, cfg, authGlob, l)
+	}
+	return e.manualTriggerNew(ctx, cfg, authGlob, l)
+}
+
+// manualTriggerLegacy is the pre-v0.3.0 manual-run flow, unchanged.
+func (e *engine) manualTriggerLegacy(ctx context.Context, cfg pluginConfig, authGlob string, l lang) (manualRunResult, error) {
 	entries, err := e.auths.ListAuths()
 	if err != nil {
 		return manualRunResult{}, fmt.Errorf("host.auth.list: %w", err)
@@ -486,6 +703,107 @@ func (e *engine) manualTrigger(ctx context.Context, authGlob string, l lang) (ma
 		}
 	} else if cfg.Log {
 		hostLog("warn", tr(l, msgModelPrecheckFailed, errModels))
+	}
+
+	for _, targets := range sendGroups {
+		outcomes := runProviderGroup(ctx, sender, e.ring, l, cfg.Message, cfg.MaxTokens, cfg.MaxRounds, targets)
+		for name, outcome := range outcomes {
+			result.Outcomes[name] = outcome
+			if !cfg.Log {
+				continue
+			}
+			t := targetByName[name]
+			if outcome.Covered {
+				hostLog("info", tr(l, msgWarmedAccount, name, t.Provider, t.Model, "manual", outcome.StatusCode, outcome.Rounds))
+			} else {
+				hostLog("warn", tr(l, msgWarmupDidNotCover, name, t.Provider, t.Model, "manual", outcome.Warning))
+			}
+		}
+	}
+	return result, nil
+}
+
+// manualTriggerNew is the v0.3.0 manual-run flow: accounts[]/model
+// resolution (resolveNewAuth) instead of resolveAuthConfig, and the same
+// candidate-list auto-model-selection tickNew uses. The time-of-day gate is
+// irrelevant to a manual trigger either way -- both flows always fire
+// "now" -- so no cron evaluation is needed here.
+func (e *engine) manualTriggerNew(ctx context.Context, cfg pluginConfig, authGlob string, l lang) (manualRunResult, error) {
+	entries, err := e.auths.ListAuths()
+	if err != nil {
+		return manualRunResult{}, fmt.Errorf("host.auth.list: %w", err)
+	}
+	ov := e.overridesSnapshot()
+
+	result := manualRunResult{Lang: string(l), Skipped: map[string]string{}, Outcomes: map[string]roundOutcome{}}
+	groups := make(map[string][]dueTarget)
+	targetByName := make(map[string]dueTarget)
+	now := time.Now()
+
+	e.manualMu.Lock()
+	for _, entry := range entries {
+		name := strings.TrimSpace(entry.Name)
+		if name == "" || !stateKeyProviderGlob(authGlob, name) {
+			continue
+		}
+		if entry.Disabled || entry.Unavailable {
+			result.Skipped[name] = tr(l, msgSkippedDisabled)
+			continue
+		}
+		res := resolveNewAuth(cfg, ov, name, entry.Provider)
+		if !res.Selected {
+			result.Skipped[name] = tr(l, msgSkippedNoModel)
+			continue
+		}
+		if last, seen := e.manualLast[name]; seen && now.Sub(last) < manualTriggerCooldown {
+			result.Skipped[name] = tr(l, msgSkippedCooldown)
+			continue
+		}
+		e.manualLast[name] = now
+		provider := strings.ToLower(strings.TrimSpace(entry.Provider))
+		target := dueTarget{
+			Name:            name,
+			AuthID:          entry.ID,
+			Provider:        provider,
+			Model:           res.ModelSpec,
+			ReasoningEffort: res.ReasoningEffort,
+			HHMM:            "manual",
+			SlotAt:          now,
+			DateKey:         slotDateKey(now, cfg.location),
+		}
+		groups[provider] = append(groups[provider], target)
+		targetByName[name] = target
+		result.Attempted = append(result.Attempted, name)
+	}
+	e.manualMu.Unlock()
+
+	if len(groups) == 0 {
+		return result, nil
+	}
+
+	apiKey, err := resolveAPIKey(cfg)
+	if err != nil {
+		return manualRunResult{}, fmt.Errorf("resolve api-key: %w", err)
+	}
+	sender := e.newSender(cfg.BaseURL, apiKey)
+
+	available, errModels := sender.AvailableModels(ctx)
+	precheckOK := errModels == nil
+	if !precheckOK && cfg.Log {
+		hostLog("warn", tr(l, msgModelPrecheckFailed, errModels))
+	}
+	resolvedGroups, autoUnresolved := resolveAutoModels(groups, available, precheckOK)
+	sendGroups := resolvedGroups
+	var explicitUnavailable []dueTarget
+	if precheckOK {
+		sendGroups, explicitUnavailable = filterUnavailableModels(resolvedGroups, available)
+	}
+	for _, t := range append(append([]dueTarget(nil), autoUnresolved...), explicitUnavailable...) {
+		warning := modelUnavailableWarning(l, t)
+		result.Outcomes[t.Name] = roundOutcome{Covered: false, Warning: warning}
+		if cfg.Log {
+			hostLog("warn", tr(l, msgAuthModelUnavailable, t.Name, t.Provider, t.Model, "manual", warning))
+		}
 	}
 
 	for _, targets := range sendGroups {

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -26,8 +27,17 @@ const (
 	resourceRunPath    = "/run"
 	resourceStatusPath = "/status"
 	resourcePanelPath  = "/panel"
+	resourceSetPath    = "/set"
 	runQueryAuthKey    = "auth"
 	runRequestBudget   = 4 * time.Minute
+
+	// setQuery* are the /set route's query parameters (also GET-only, for
+	// the same reason resourceRunPath is -- see the comment above).
+	setQueryScopeKey = "scope"
+	setQueryAuthKey  = "auth"
+	setQueryModelKey = "model"
+	setScopeGlobal   = "global"
+	setScopeAuth     = "auth"
 )
 
 func managementRegistration() pluginapi.ManagementRegistrationResponse {
@@ -51,6 +61,11 @@ func managementRegistration() pluginapi.ManagementRegistrationResponse {
 				Path:        resourceRunPath,
 				Description: "立即触发一轮预热（仅 GET；可选 ?auth=<glob>）/ Trigger an immediate out-of-schedule warmup round (GET only; optional ?auth=<glob>).",
 			},
+			{
+				// No menu label: this is an action endpoint, not a page.
+				Path:        resourceSetPath,
+				Description: "设置/清除某账号或全局的预热模型（仅 GET；?scope=global|auth&auth=<name>&model=<id|auto>）/ Set or clear the warmup model for one account or globally (GET only; ?scope=global|auth&auth=<name>&model=<id|auto>).",
+			},
 		},
 	}
 }
@@ -67,6 +82,8 @@ func handleManagementRequest(raw []byte) ([]byte, error) {
 	switch {
 	case strings.HasSuffix(trimmed, resourceRunPath):
 		resp = handleRunRequest(req)
+	case strings.HasSuffix(trimmed, resourceSetPath):
+		resp = handleSetRequest(req)
 	case strings.HasSuffix(trimmed, resourceStatusPath):
 		resp = handleStatusRequest(req)
 	default:
@@ -118,8 +135,16 @@ func requestLang(cfg *pluginConfig, req pluginapi.ManagementRequest) lang {
 }
 
 type configSummary struct {
-	Enabled        bool   `json:"enabled"`
-	Timezone       string `json:"timezone"`
+	Enabled    bool     `json:"enabled"`
+	LegacyMode bool     `json:"legacy_mode"`
+	Time       []string `json:"time,omitempty"`
+	Model      string   `json:"model,omitempty"`
+	Accounts   []string `json:"accounts,omitempty"`
+	Timezone   string   `json:"timezone"`
+	// TimezoneAuto is true when the new-format config left advanced.timezone
+	// unset, meaning Timezone above is whatever the host process's own local
+	// timezone (time.Local) resolved to, not an explicit setting.
+	TimezoneAuto   bool   `json:"timezone_auto"`
 	BaseURL        string `json:"base_url"`
 	Message        string `json:"message"`
 	MaxTokens      int    `json:"max_tokens"`
@@ -128,24 +153,56 @@ type configSummary struct {
 	Language       string `json:"language"`
 }
 
+func buildConfigSummary(cfg pluginConfig) configSummary {
+	cs := configSummary{
+		Enabled:        cfg.Enabled,
+		LegacyMode:     cfg.legacyMode,
+		Timezone:       cfg.Timezone,
+		BaseURL:        cfg.BaseURL,
+		Message:        cfg.Message,
+		MaxTokens:      cfg.MaxTokens,
+		MaxRounds:      cfg.MaxRounds,
+		CatchUpMinutes: cfg.CatchUpMinutes,
+		Language:       cfg.Language,
+	}
+	if cfg.legacyMode {
+		cs.Time = cfg.Default.Times
+		return cs
+	}
+	cs.Time = cfg.TimeRaw
+	cs.TimezoneAuto = strings.TrimSpace(cfg.Advanced.Timezone) == ""
+	if m := strings.TrimSpace(cfg.Model.Scalar); m != "" {
+		cs.Model = m
+	} else if len(cfg.Model.Map) == 0 {
+		cs.Model = "auto"
+	}
+	for _, a := range cfg.Accounts {
+		cs.Accounts = append(cs.Accounts, a.Match)
+	}
+	return cs
+}
+
 type authStatus struct {
 	Name        string   `json:"name"`
 	Provider    string   `json:"provider,omitempty"`
 	Enabled     bool     `json:"enabled"`
 	Model       string   `json:"model,omitempty"`
+	ModelSource string   `json:"model_source,omitempty"`
 	Times       []string `json:"times,omitempty"`
 	NextTrigger string   `json:"next_trigger,omitempty"`
 	Skipped     string   `json:"skipped,omitempty"`
+	Warning     string   `json:"warning,omitempty"`
 }
 
 type statusPayload struct {
-	Lang          string        `json:"lang"`
-	Config        configSummary `json:"config"`
-	Auths         []authStatus  `json:"auths,omitempty"`
-	AuthsError    string        `json:"auths_error,omitempty"`
-	Recent        []slotRecord  `json:"recent"`
-	LastTick      string        `json:"last_tick,omitempty"`
-	LastTickError string        `json:"last_tick_error,omitempty"`
+	Lang            string        `json:"lang"`
+	Config          configSummary `json:"config"`
+	Auths           []authStatus  `json:"auths,omitempty"`
+	AuthsError      string        `json:"auths_error,omitempty"`
+	Recent          []slotRecord  `json:"recent"`
+	LastTick        string        `json:"last_tick,omitempty"`
+	LastTickError   string        `json:"last_tick_error,omitempty"`
+	AvailableModels []modelInfo   `json:"available_models"`
 }
 
 func handleStatusRequest(req pluginapi.ManagementRequest) pluginapi.ManagementResponse {
@@ -157,18 +214,10 @@ func handleStatusRequest(req pluginapi.ManagementRequest) pluginapi.ManagementRe
 	cfg := e.config()
 	l := requestLang(&cfg, req)
 	payload := statusPayload{
-		Lang: string(l),
-		Config: configSummary{
-			Enabled:        cfg.Enabled,
-			Timezone:       cfg.Timezone,
-			BaseURL:        cfg.BaseURL,
-			Message:        cfg.Message,
-			MaxTokens:      cfg.MaxTokens,
-			MaxRounds:      cfg.MaxRounds,
-			CatchUpMinutes: cfg.CatchUpMinutes,
-			Language:       cfg.Language,
-		},
-		Recent: e.state.snapshot(),
+		Lang:            string(l),
+		Config:          buildConfigSummary(cfg),
+		Recent:          e.state.snapshot(),
+		AvailableModels: []modelInfo{},
 	}
 
 	e.lastTickMu.Lock()
@@ -178,6 +227,30 @@ func handleStatusRequest(req pluginapi.ManagementRequest) pluginapi.ManagementRe
 	payload.LastTickError = e.lastError
 	e.lastTickMu.Unlock()
 
+	// available_models feeds both the status JSON directly and this
+	// function's own auto-model-selection display below. A failure here
+	// (no api-key resolvable, GET /v1/models unreachable, ...) is never
+	// fatal -- it just means available_models stays empty and any
+	// auto-selected model falls back to its candidate-list default, exactly
+	// like a live warmup tick would.
+	var availableSet map[string]bool
+	precheckOK := false
+	if !cfg.legacyMode {
+		if apiKey, err := resolveAPIKey(cfg); err == nil {
+			ctx, cancel := context.WithTimeout(context.Background(), modelsPrecheckTimeout)
+			models, errModels := newHTTPChatSender(cfg.BaseURL, apiKey).ListModelsDetailed(ctx)
+			cancel()
+			if errModels == nil {
+				precheckOK = true
+				payload.AvailableModels = models
+				availableSet = make(map[string]bool, len(models))
+				for _, m := range models {
+					availableSet[m.ID] = true
+				}
+			}
+		}
+	}
+
 	entries, err := e.auths.ListAuths()
 	if err != nil {
 		payload.AuthsError = err.Error()
@@ -186,6 +259,34 @@ func handleStatusRequest(req pluginapi.ManagementRequest) pluginapi.ManagementRe
 
 	now := time.Now().In(cfg.location)
 	catchUp := time.Duration(cfg.CatchUpMinutes) * time.Minute
+	if cfg.legacyMode {
+		for _, entry := range entries {
+			name := strings.TrimSpace(entry.Name)
+			if name == "" {
+				continue
+			}
+			as := authStatus{Name: name, Provider: entry.Provider}
+			switch {
+			case entry.Disabled || entry.Unavailable:
+				as.Skipped = tr(l, msgSkippedDisabled)
+			default:
+				if effective, ok := resolveAuthConfig(cfg, name, entry.Provider); ok {
+					as.Enabled = true
+					as.Model = effective.Model
+					as.Times = effective.Times
+					if next := nextTriggerFor(effective.Times, now, cfg.location, catchUp, e.state, name); !next.IsZero() {
+						as.NextTrigger = next.Format(time.RFC3339)
+					}
+				} else {
+					as.Skipped = tr(l, msgSkippedNoModel)
+				}
+			}
+			payload.Auths = append(payload.Auths, as)
+		}
+		return jsonManagementResponse(http.StatusOK, payload)
+	}
+
+	ov := e.overridesSnapshot()
 	for _, entry := range entries {
 		name := strings.TrimSpace(entry.Name)
 		if name == "" {
@@ -196,15 +297,25 @@ func handleStatusRequest(req pluginapi.ManagementRequest) pluginapi.ManagementRe
 		case entry.Disabled || entry.Unavailable:
 			as.Skipped = tr(l, msgSkippedDisabled)
 		default:
-			if effective, ok := resolveAuthConfig(cfg, name, entry.Provider); ok {
-				as.Enabled = true
-				as.Model = effective.Model
-				as.Times = effective.Times
-				if next := nextTriggerFor(effective.Times, now, cfg.location, catchUp, e.state, name); !next.IsZero() {
-					as.NextTrigger = next.Format(time.RFC3339)
-				}
-			} else {
-				as.Skipped = tr(l, msgSkippedNoModel)
+			res := resolveNewAuth(cfg, ov, name, entry.Provider)
+			if !res.Selected {
+				as.Skipped = tr(l, msgSkippedNotInAccounts)
+				break
+			}
+			as.Enabled = true
+			as.Times = res.TimeRaw
+			as.ModelSource = res.ModelSource
+			if res.ModelSpec != "" {
+				as.Model = res.ModelSpec
+			} else if model, ok := selectModel(entry.Provider, availableSet, precheckOK); ok {
+				as.Model = model
+			}
+			exprs, invalid := parseTimeExprs(res.TimeRaw)
+			if len(invalid) > 0 {
+				as.Warning = tr(l, msgInvalidTimeExpr, strings.Join(invalid, ", "))
+			}
+			if next := nextTriggerForCron(exprs, now, cfg.location, catchUp, e.state, name); !next.IsZero() {
+				as.NextTrigger = next.Format(time.RFC3339)
 			}
 		}
 		payload.Auths = append(payload.Auths, as)
@@ -239,6 +350,35 @@ func nextTriggerFor(times []string, now time.Time, loc *time.Location, catchUp t
 	return best
 }
 
+// nextTriggerForCron is nextTriggerFor's new-format (cron/HH:MM expression)
+// equivalent: today's most recent trigger if it is still due (within
+// catchUp) and not already recorded, otherwise the soonest future trigger,
+// across every expression, earliest wins.
+func nextTriggerForCron(exprs []*cronExpr, now time.Time, loc *time.Location, catchUp time.Duration, state *stateStore, name string) time.Time {
+	var best time.Time
+	for _, expr := range exprs {
+		var candidate time.Time
+		if due, ok := expr.lastTriggerAtOrBefore(now, loc, catchUp); ok {
+			dateKey := slotDateKey(due, loc)
+			hhmm := due.Format("15:04")
+			if !state.isRecorded(name, dateKey, hhmm) {
+				candidate = due
+			}
+		}
+		if candidate.IsZero() {
+			next, ok := expr.nextTrigger(now, loc)
+			if !ok {
+				continue
+			}
+			candidate = next
+		}
+		if best.IsZero() || candidate.Before(best) {
+			best = candidate
+		}
+	}
+	return best
+}
+
 func handleRunRequest(req pluginapi.ManagementRequest) pluginapi.ManagementResponse {
 	e := activeEngine()
 	if e == nil {
@@ -257,5 +397,90 @@ func handleRunRequest(req pluginapi.ManagementRequest) pluginapi.ManagementRespo
 	if err != nil {
 		return jsonManagementResponse(http.StatusInternalServerError, map[string]string{"error": tr(l, msgRunFailed, err.Error()), "lang": string(l)})
 	}
+	return jsonManagementResponse(http.StatusOK, result)
+}
+
+// setResult is what the /set route reports back.
+type setResult struct {
+	Lang    string `json:"lang"`
+	Scope   string `json:"scope"`
+	Auth    string `json:"auth,omitempty"`
+	Model   string `json:"model"`
+	Message string `json:"message"`
+	Warning string `json:"warning,omitempty"`
+}
+
+// handleSetRequest persists (or, for model=auto, clears) a panel model
+// override -- see overrides.go for the on-disk format and config.go's
+// resolveModelSpecTier for how it outranks every other tier of the model
+// priority chain. Like /run, this is GET-only (see resourceRunPath's doc
+// comment for why POST is not reachable on a resource route at all).
+func handleSetRequest(req pluginapi.ManagementRequest) pluginapi.ManagementResponse {
+	e := activeEngine()
+	if e == nil {
+		l := requestLang(nil, req)
+		return jsonManagementResponse(http.StatusServiceUnavailable, map[string]string{"error": tr(l, msgEngineNotRunning), "lang": string(l)})
+	}
+	cfg := e.config()
+	l := requestLang(&cfg, req)
+
+	var scope, authName, model string
+	if req.Query != nil {
+		scope = strings.TrimSpace(req.Query.Get(setQueryScopeKey))
+		authName = strings.TrimSpace(req.Query.Get(setQueryAuthKey))
+		model = strings.TrimSpace(req.Query.Get(setQueryModelKey))
+	}
+	if scope != setScopeGlobal && scope != setScopeAuth {
+		return jsonManagementResponse(http.StatusBadRequest, map[string]string{"error": tr(l, msgSetInvalidScope), "lang": string(l)})
+	}
+	if scope == setScopeAuth && authName == "" {
+		return jsonManagementResponse(http.StatusBadRequest, map[string]string{"error": tr(l, msgSetAuthRequired), "lang": string(l)})
+	}
+	if model == "" {
+		return jsonManagementResponse(http.StatusBadRequest, map[string]string{"error": tr(l, msgSetModelRequired), "lang": string(l)})
+	}
+
+	// "auto" clears the override (deletes the entry) rather than storing the
+	// literal string -- see modelOverrides' doc comment in overrides.go.
+	clearing := strings.EqualFold(model, "auto")
+	warning := ""
+	if !clearing {
+		apiKey, err := resolveAPIKey(cfg)
+		if err != nil {
+			warning = tr(l, msgSetPrecheckFailedWarning, err)
+		} else {
+			ctx, cancel := context.WithTimeout(context.Background(), modelsPrecheckTimeout)
+			available, errModels := newHTTPChatSender(cfg.BaseURL, apiKey).AvailableModels(ctx)
+			cancel()
+			if errModels != nil {
+				warning = tr(l, msgSetPrecheckFailedWarning, errModels)
+			} else if !available[model] {
+				return jsonManagementResponse(http.StatusBadRequest, map[string]string{"error": tr(l, msgSetModelNotAvailable, model), "lang": string(l)})
+			}
+		}
+	}
+
+	if e.overrides == nil {
+		return jsonManagementResponse(http.StatusInternalServerError, map[string]string{"error": fmt.Errorf("overrides store not initialized").Error(), "lang": string(l)})
+	}
+	saveValue := model
+	if clearing {
+		saveValue = ""
+	}
+	var saveErr error
+	if scope == setScopeGlobal {
+		saveErr = e.overrides.setGlobal(saveValue)
+	} else {
+		saveErr = e.overrides.setAuth(authName, saveValue)
+	}
+	if saveErr != nil {
+		return jsonManagementResponse(http.StatusInternalServerError, map[string]string{"error": saveErr.Error(), "lang": string(l)})
+	}
+
+	message := tr(l, msgSetSaved)
+	if clearing {
+		message = tr(l, msgSetCleared)
+	}
+	result := setResult{Lang: string(l), Scope: scope, Auth: authName, Model: model, Message: message, Warning: warning}
 	return jsonManagementResponse(http.StatusOK, result)
 }
