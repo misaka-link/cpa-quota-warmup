@@ -11,7 +11,7 @@ import (
 
 const (
 	pluginName    = "cpa-quota-warmup"
-	pluginVersion = "0.5.0"
+	pluginVersion = "0.5.1"
 	logPrefix     = "[cpa-quota-warmup] "
 )
 
@@ -179,8 +179,8 @@ func registrationPayload() any {
 			// v3InlineMode) but are intentionally no longer advertised here.
 			ConfigFields: []pluginapi.ConfigField{
 				{Name: "enabled", Type: pluginapi.ConfigFieldTypeBoolean, Description: "为 false 时插件完全不预热任何账号"},
-				{Name: "config-file", Type: pluginapi.ConfigFieldTypeString, Description: "账号预热配置文件路径，默认 <CPA 工作目录>/quota-warmup.yaml；该文件由插件自动生成与维护，每个认证文件一段，直接改这个文件即可（无需重启），也可以在面板上编辑"},
-				{Name: "advanced", Type: pluginapi.ConfigFieldTypeObject, Description: "高级设置，一般不用改，全部可选：timezone（默认跟随宿主进程本地时区）、base-url（默认 http://127.0.0.1:8317）、api-key（默认读取宿主 config.yaml 的 api-keys[0]）、message（默认 \"hi\"）、max-tokens（默认 16）、max-rounds（默认 3）、catch-up-minutes（默认 60）、language（默认 auto）、log（默认 true）"},
+				{Name: "config-file", Type: pluginapi.ConfigFieldTypeString, Description: "账号预热配置文件路径，默认为 CPA 工作目录下的 quota-warmup.yaml；该文件由插件自动生成与维护，每个认证文件一段，直接改这个文件即可（无需重启），也可以在面板上编辑"},
+				{Name: "advanced", Type: pluginapi.ConfigFieldTypeObject, Description: "高级设置，一般不用改，全部可选：timezone（默认跟随宿主进程本地时区）、base-url（默认 http://127.0.0.1:8317）、api-key（默认读取宿主 config.yaml 的 api-keys[0]）、message（默认 hi）、max-tokens（默认 16）、max-rounds（默认 3）、catch-up-minutes（默认 60）、language（默认 auto）、log（默认 true）"},
 			},
 		},
 		Capabilities: map[string]bool{"usage_plugin": true, "management_api": true},

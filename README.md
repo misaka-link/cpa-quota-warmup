@@ -240,7 +240,7 @@ plugins:
 
 ```bash
 cd ~/cpa-plugins/cpa-quota-warmup
-scripts/build.sh                 # -> dist/cpa-quota-warmup-v0.5.0.so (+ .sha256)
+scripts/build.sh                 # -> dist/cpa-quota-warmup-v0.5.1.so (+ .sha256)
 sudo ops/merge-config.py         # 原地合并默认配置到 /var/lib/cli-proxy-api/config.yaml（保 inode）
                                   # sudo ops/merge-config.py --remove 可移除
 sudo ops/deploy                  # 安装 .so 到插件目录并重启 cli-proxy-api.service
@@ -257,7 +257,7 @@ sudo ops/deploy                  # 安装 .so 到插件目录并重启 cli-proxy
 go vet ./... && go test ./...
 
 # 2. 真 ABI 集成测试（不需要真实宿主/网络）
-python3 integration_abi_test.py dist/cpa-quota-warmup-v0.5.0.so
+python3 integration_abi_test.py dist/cpa-quota-warmup-v0.5.1.so
 
 # 3. 部署后看宿主日志（host.log 回调，前缀 [cpa-quota-warmup]）
 journalctl -u cli-proxy-api | rg 'cpa-quota-warmup'
