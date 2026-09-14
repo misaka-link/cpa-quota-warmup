@@ -121,7 +121,7 @@ func registrationPayload() any {
 		Metadata: pluginapi.Metadata{
 			Name:    pluginName,
 			Version: pluginVersion,
-			Author:  "Scottio",
+			Author:  "szxypi",
 			// Required by CPA. This points to the host SDK, not a published plugin repository.
 			GitHubRepository: "https://github.com/router-for-me/CLIProxyAPI",
 			// Descriptions are static strings fixed at plugin.register time, so

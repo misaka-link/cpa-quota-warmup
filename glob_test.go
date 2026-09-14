@@ -10,8 +10,8 @@ func TestGlobMatch(t *testing.T) {
 	}{
 		{"codex-*-prolite.json", "codex-acct-prolite.json", true},
 		{"codex-*-prolite.json", "codex-acct-team.json", false},
-		{"antigravity-szxypy@gmail.com.json", "antigravity-szxypy@gmail.com.json", true},
-		{"antigravity-szxypy@gmail.com.json", "antigravity-other@gmail.com.json", false},
+		{"antigravity-alice@example.com.json", "antigravity-alice@example.com.json", true},
+		{"antigravity-alice@example.com.json", "antigravity-bob@example.com.json", false},
 		{"*", "anything.json", true},
 		{"", "anything.json", false},
 		{"[", "anything.json", false}, // malformed pattern never matches, never panics

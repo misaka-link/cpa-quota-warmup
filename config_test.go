@@ -59,7 +59,7 @@ providers:
 auths:
   - match: "codex-*-prolite.json"
     enabled: false
-  - match: "antigravity-szxypy@gmail.com.json"
+  - match: "antigravity-alice@example.com.json"
     times: ["05:30", "10:35"]
     model: "gemini-3.1-flash-lite"
 `)
@@ -76,16 +76,16 @@ auths:
 	}
 
 	// Plain antigravity auth: provider default model, default schedule.
-	eff, ok := resolveAuthConfig(cfg, "antigravity-other@gmail.com.json", "antigravity")
+	eff, ok := resolveAuthConfig(cfg, "antigravity-bob@example.com.json", "antigravity")
 	if !ok {
-		t.Fatalf("expected antigravity-other to resolve")
+		t.Fatalf("expected antigravity-bob to resolve")
 	}
 	if eff.Model != "gemini-3.1-flash-lite" || len(eff.Times) != 1 || eff.Times[0] != "05:30" {
 		t.Fatalf("unexpected effective config: %+v", eff)
 	}
 
 	// Overridden antigravity auth: extra time slot, same model (explicit).
-	eff, ok = resolveAuthConfig(cfg, "antigravity-szxypy@gmail.com.json", "antigravity")
+	eff, ok = resolveAuthConfig(cfg, "antigravity-alice@example.com.json", "antigravity")
 	if !ok {
 		t.Fatalf("expected the overridden antigravity auth to resolve")
 	}

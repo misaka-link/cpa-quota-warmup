@@ -216,18 +216,18 @@ func TestRunProviderGroupRetriesUncoveredAccountsNextRound(t *testing.T) {
 }
 
 // TestRunProviderGroupCoversBothAccountsFromASingleRetriedRequest reproduces
-// a production incident: one codex warmup request hit the szxypy team
-// account first (usage_limit_reached, 429), and the host retried the exact
-// same client request against the shao account (200) -- both usage.handle
-// records carried the same SessionID. The old bySessionTag/waitFor logic
-// returned only the most recent match per tag and retired the tag on its
-// first hit, so it saw only the 200 on shao and never noticed szxypy had
-// been touched at all, then wasted two more rounds re-sending to an account
-// that was already in a 429 cooldown before giving up and reporting szxypy
-// as "not covered" even though it plainly had been.
+// a production incident: one warmup request hit one account first
+// (usage_limit_reached, 429), and the host retried the exact same client
+// request against a second account (200) -- both usage.handle records
+// carried the same SessionID. The old bySessionTag/waitFor logic returned
+// only the most recent match per tag and retired the tag on its first hit,
+// so it saw only the 200 on the second account and never noticed the first
+// had been touched at all, then wasted two more rounds re-sending to an
+// account that was already in a 429 cooldown before giving up and reporting
+// the first account as "not covered" even though it plainly had been.
 func TestRunProviderGroupCoversBothAccountsFromASingleRetriedRequest(t *testing.T) {
 	ring := newUsageRing()
-	targets := targetsFor("szxypy", "shao")
+	targets := targetsFor("alice", "bob")
 	sender := &fakeSender{ring: ring, assign: func(idx int, req warmupSendRequest) (string, int, bool) {
 		if idx != 0 {
 			// The second outbound request in this round is not needed for
@@ -236,25 +236,25 @@ func TestRunProviderGroupCoversBothAccountsFromASingleRetriedRequest(t *testing.
 			return "", 0, false
 		}
 		// The single client request tagged idx 0 produced two usage.handle
-		// callbacks under the same SessionID: a failed attempt on szxypy,
-		// then a successful retry on shao.
+		// callbacks under the same SessionID: a failed attempt on alice,
+		// then a successful retry on bob.
 		ring.record(pluginapi.UsageRecord{
 			SessionID:   sessionHeaderRecordPrefix + req.SessionTag,
-			AuthID:      "auth-szxypy",
+			AuthID:      "auth-alice",
 			Model:       req.Model,
 			RequestedAt: time.Now(),
 			Failed:      true,
 			Failure:     pluginapi.UsageFailure{StatusCode: 429},
 		})
-		return "auth-shao", 200, true
+		return "auth-bob", 200, true
 	}}
 
 	outcomes := runProviderGroup(context.Background(), sender, ring, langEN, "hi", 16, 3, targets)
-	if o := outcomes["szxypy"]; !o.Covered || o.StatusCode != 429 || o.Rounds != 1 {
-		t.Fatalf("outcome[szxypy] = %+v, want covered in round 1 with the 429 status recorded", o)
+	if o := outcomes["alice"]; !o.Covered || o.StatusCode != 429 || o.Rounds != 1 {
+		t.Fatalf("outcome[alice] = %+v, want covered in round 1 with the 429 status recorded", o)
 	}
-	if o := outcomes["shao"]; !o.Covered || o.StatusCode != 200 || o.Rounds != 1 {
-		t.Fatalf("outcome[shao] = %+v, want covered in round 1 with the 200 status", o)
+	if o := outcomes["bob"]; !o.Covered || o.StatusCode != 200 || o.Rounds != 1 {
+		t.Fatalf("outcome[bob] = %+v, want covered in round 1 with the 200 status", o)
 	}
 	if sender.calls != 2 {
 		t.Fatalf("expected exactly 2 requests (both accounts already covered after round 1), got %d", sender.calls)

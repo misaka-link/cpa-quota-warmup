@@ -1,5 +1,35 @@
 # cpa-quota-warmup
 
+## English summary
+
+`cpa-quota-warmup` is a native plugin (Go, cgo `c-shared`) for [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) (CPA). For each configured auth file, at a scheduled time of day (default 05:30 Asia/Shanghai, overridable per file), it sends a tiny chat-completion request (`"hi"`, `max_tokens: 16`) using that account's provider's cheapest model, to warm up the account's 5-hour quota window before the first real request of the day hits it cold. It needs no credentials of its own: it authenticates as an ordinary client using CPA's own configured `api-keys`.
+
+### Install
+
+- **From a release**: download `cpa-quota-warmup-v<ver>.so` from this repository's [Releases](https://github.com/szxypi/cpa-quota-warmup/releases) page and place it under `<plugins.dir>/linux/amd64/` in your CPA installation (CPA derives the plugin id from the file name itself, not from any metadata field). Add a `plugins.configs.cpa-quota-warmup` block to CPA's `config.yaml` (minimal example below), then restart CPA.
+- **From source**: `CGO_ENABLED=1 scripts/build.sh` (requires Go 1.26+). This plugin is built against `github.com/router-for-me/CLIProxyAPI/v7` SDK `v7.2.158` (see `go.mod`) and targets the CPA `7.2.15x` host line.
+- `ops/deploy` and `ops/merge-config.py` are convenience scripts written for the maintainer's own local systemd deployment (they assume a `cli-proxy-api.service` and `/var/lib/cli-proxy-api/...` paths); treat them as examples and adjust the paths for your own setup, or configure/install by hand instead.
+
+Minimal config:
+
+```yaml
+plugins:
+  configs:
+    cpa-quota-warmup:
+      enabled: true
+      default:
+        enabled: true
+        times: ["05:30"]
+      providers:
+        antigravity: { model: "gemini-3.7-flash-high" }
+```
+
+Status/config panel (self-contained HTML, no external assets, follows the CPA Management Center's own theme and language): `GET /v0/resource/plugins/cpa-quota-warmup/panel`.
+
+**Limitation, in one sentence**: the plugin cannot pin a request to a specific account (CPA gives plugins no such hook), so it can only fan requests out round-robin and reconcile coverage after the fact via usage records -- see "覆盖策略的局限" below for the full explanation (in Chinese; the rest of this document is Chinese-first).
+
+---
+
 CLIProxyAPI (CPA) 原生插件（Go c-shared 库）。每天在配置的时间点（默认每个认证文件 05:30 Asia/Shanghai，可按认证文件单独覆盖），用该账号所属 provider 里最便宜的模型给它发一条极短消息（默认 `"hi"`，`max_tokens: 16`），预热该账号的 5 小时额度窗口，避免第一次真实请求撞上"冷启动"配额检查。
 
 插件本身**不需要，也没有**任何私有凭据或密钥：它就是本机 CPA 的一个普通客户端，用 `api-keys[0]`（或显式配置的 `api-key`）向自己的 `/v1/chat/completions` 发请求。
@@ -57,7 +87,7 @@ plugins:
       auths:
         - match: "codex-*-prolite.json"
           enabled: false
-        - match: "antigravity-szxypy@gmail.com.json"
+        - match: "antigravity-alice@example.com.json"
           times: ["05:30", "10:35"]
           model: "gemini-3.7-flash-high"
 ```
@@ -72,13 +102,15 @@ plugins:
 
 ```bash
 cd ~/cpa-plugins/cpa-quota-warmup
-scripts/build.sh                 # -> dist/cpa-quota-warmup-v0.2.0.so (+ .sha256)
+scripts/build.sh                 # -> dist/cpa-quota-warmup-v0.2.1.so (+ .sha256)
 sudo ops/merge-config.py         # 原地合并默认配置到 /var/lib/cli-proxy-api/config.yaml（保 inode）
                                   # sudo ops/merge-config.py --remove 可移除
 sudo ops/deploy                  # 安装 .so 到插件目录并重启 cli-proxy-api.service
 ```
 
 `ops/merge-config.py` 写入的默认配置就是上面那份（含 `codex-*-prolite.json` 禁用那条）。修改前会先按插件 id 做正则查找替换已有块，重复执行是幂等的。
+
+**`ops/deploy` 与 `ops/merge-config.py` 是针对维护者本机 systemd 部署（`cli-proxy-api.service`、`/var/lib/cli-proxy-api/...`）写的辅助脚本**，不是通用安装程序；换一套部署方式（Docker、不同路径、不同服务名等）时请照着改脚本里的路径/服务名，或者干脆手动完成"放 `.so`、改 `config.yaml`、重启 CPA"这三步。
 
 ## 验证方法
 
@@ -87,7 +119,7 @@ sudo ops/deploy                  # 安装 .so 到插件目录并重启 cli-proxy
 go vet ./... && go test ./...
 
 # 2. 真 ABI 集成测试（不需要真实宿主/网络）
-python3 integration_abi_test.py dist/cpa-quota-warmup-v0.2.0.so
+python3 integration_abi_test.py dist/cpa-quota-warmup-v0.2.1.so
 
 # 3. 部署后看宿主日志（host.log 回调，前缀 [cpa-quota-warmup]）
 journalctl -u cli-proxy-api | rg 'cpa-quota-warmup'
@@ -140,7 +172,7 @@ curl -s 'http://127.0.0.1:8317/v0/resource/plugins/cpa-quota-warmup/run?auth=ant
 
 ## v0.1.1（线上手动触发实测后的修复）
 
-1. **同一会话标签的多条 `usage.handle` 记录不再被遮蔽。** 线上实测：一条 codex 预热请求先在 `codex-92661722-szxypy@gmail.com-team.json` 上得到 429 `usage_limit_reached`，宿主随即在同一请求内重试到另一个账号成功——两条 `usage.handle` 记录共享同一个 `SessionID`。旧实现 `bySessionTag` 只返回最新一条、`waitForSessionCoverage` 找到一条就把该标记标记为"已处理"，于是 429 那条被吞掉，对应账号被误报"not covered"。现在 `usageRing.allBySessionTag` 返回该标记下的**全部**记录，`waitForSessionCoverage` 在整个窗口内持续收集、直到目标账号集合全部命中或超时才返回；失败记录一样算覆盖。见 `usage_test.go`/`runner_test.go` 里复现该场景的单测。
+1. **同一会话标签的多条 `usage.handle` 记录不再被遮蔽。** 线上实测：一条 codex 预热请求先在其中一个 team 账号上得到 429 `usage_limit_reached`，宿主随即在同一请求内重试到另一个 team 账号成功——两条 `usage.handle` 记录共享同一个 `SessionID`。旧实现 `bySessionTag` 只返回最新一条、`waitForSessionCoverage` 找到一条就把该标记标记为"已处理"，于是 429 那条被吞掉，对应账号被误报"not covered"。现在 `usageRing.allBySessionTag` 返回该标记下的**全部**记录，`waitForSessionCoverage` 在整个窗口内持续收集、直到目标账号集合全部命中或超时才返回；失败记录一样算覆盖。见 `usage_test.go`/`runner_test.go` 里复现该场景的单测。
 2. **默认模型名改成本机 `GET /v1/models` 实际暴露的那些**（antigravity `gemini-3.7-flash-high`、kimi `kimi-k2.8`、xai `grok-4.6`；codex/claude/gemini-cli/aistudio/vertex 不变），避免像 `gemini-3.1-flash-lite` 那样直接 404。
 3. **加了模型预检**（见"机制"第 3 步）：配置漂移（模型改名/下线）时只会跳过并 warn，不会对着一个不存在的模型反复发请求。
 4. `run` 手动触发现在也会像后台 tick 一样，给每个账号打一行 `host.log`（含预检跳过的情况），方便对着 journal 排查。
