@@ -249,6 +249,13 @@ const panelHTMLTemplate = `<!doctype html>
   footer.meta { color: var(--muted); font-size: 12px; }
   #runResult { margin-top: 14px; border-top: 1px solid var(--border); padding-top: 14px; }
   #runResult h3 { margin: 0 0 8px; font-size: 13px; font-weight: 620; }
+  .config-yaml-editor {
+    width: 100%; min-height: 360px; box-sizing: border-box; resize: vertical;
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+    font-size: 12.5px; line-height: 1.5; tab-size: 2;
+    padding: 10px 12px; border-radius: 6px; border: 1px solid var(--border);
+    background: var(--panel-2); color: var(--text);
+  }
   [hidden] { display: none !important; }
 </style>
 </head>
@@ -290,6 +297,19 @@ const panelHTMLTemplate = `<!doctype html>
       <h3 data-i18n="ui_run_result_title">{{ui_run_result_title}}</h3>
       <div id="runResultBody"></div>
     </div>
+  </section>
+
+  <section class="block" id="configYamlSection" hidden>
+    <div class="block-head">
+      <h2 data-i18n="ui_section_config_yaml">{{ui_section_config_yaml}}</h2>
+      <div class="controls">
+        <button type="button" class="ghost-btn" id="configYamlReloadBtn" data-i18n="ui_config_yaml_reload">{{ui_config_yaml_reload}}</button>
+        <button type="button" class="ghost-btn" id="configYamlSaveBtn" data-i18n="ui_config_yaml_save">{{ui_config_yaml_save}}</button>
+      </div>
+    </div>
+    <div class="err" id="configYamlError" hidden></div>
+    <textarea id="configYamlEditor" class="config-yaml-editor" spellcheck="false"></textarea>
+    <p class="hint" id="configYamlMeta"></p>
   </section>
 
   <section class="block">
@@ -612,6 +632,14 @@ const panelHTMLTemplate = `<!doctype html>
     document.querySelector("#recentTable tbody").innerHTML = body || ('<tr><td colspan="9" class="empty">' + dash() + '</td></tr>');
   }
 
+  // configYamlLoaded ensures the editor's own GET .../config-yaml fetch only
+  // ever fires once automatically (the first time status reports mode ===
+  // "file"), not on every 30s load() poll -- otherwise a background refresh
+  // could clobber an edit the operator is still typing. Later refreshes only
+  // happen from an explicit "重新载入" click or right after a successful
+  // "保存" (see saveConfigYAML).
+  var configYamlLoaded = false;
+
   function load() {
     showError("");
     fetch(base + "status?lang=" + encodeURIComponent(lang), { cache: "no-store" })
@@ -620,7 +648,14 @@ const panelHTMLTemplate = `<!doctype html>
         if (!res.ok) { showError(t("ui_load_failed")); return; }
         populateModelOptions(res.body.available_models);
         renderConfig(res.body.config);
-        renderAccounts(res.body.auths, res.body.config && res.body.config.mode === "file");
+        var isFileMode = res.body.config && res.body.config.mode === "file";
+        var configYamlSection = document.getElementById("configYamlSection");
+        if (configYamlSection) { configYamlSection.hidden = !isFileMode; }
+        if (isFileMode && !configYamlLoaded) {
+          configYamlLoaded = true;
+          loadConfigYAML();
+        }
+        renderAccounts(res.body.auths, isFileMode);
         renderRecent(res.body.recent);
         var tick = res.body.last_tick ? res.body.last_tick : dash();
         var line = t("ui_label_last_tick") + ": " + esc(tick);
@@ -631,6 +666,106 @@ const panelHTMLTemplate = `<!doctype html>
       })
       .catch(function () { showError(t("ui_load_failed")); });
   }
+
+  // configYamlMtime tracks the mtime of whatever quota-warmup.yaml content
+  // is currently sitting in the editor, so saveConfigYAML's optimistic-
+  // concurrency check has something to send. It is refreshed on every
+  // successful load or save; it is deliberately never refreshed by the 30s
+  // load()/setInterval poll below, so an in-progress edit is never clobbered
+  // by a background refresh -- only an explicit "重新载入" click or a
+  // successful "保存" ever touches the editor's contents.
+  var configYamlMtime = "";
+
+  function loadConfigYAML() {
+    var errBox = document.getElementById("configYamlError");
+    var metaBox = document.getElementById("configYamlMeta");
+    var editor = document.getElementById("configYamlEditor");
+    errBox.hidden = true;
+    errBox.textContent = "";
+    fetch(base + "config-yaml?lang=" + encodeURIComponent(lang), { cache: "no-store" })
+      .then(function (resp) { return resp.json().then(function (body) { return { ok: resp.ok, body: body }; }); })
+      .then(function (res) {
+        if (!res.ok) {
+          errBox.hidden = false;
+          errBox.textContent = (res.body && res.body.error) || t("ui_config_yaml_load_failed");
+          return;
+        }
+        editor.value = res.body.content || "";
+        configYamlMtime = res.body.mtime || "";
+        var meta = res.body.path || "";
+        if (res.body.error) { meta += "（" + res.body.error + "）"; }
+        metaBox.textContent = meta;
+      })
+      .catch(function () {
+        errBox.hidden = false;
+        errBox.textContent = t("ui_config_yaml_load_failed");
+      });
+  }
+
+  // toBase64Url mirrors the server's base64.RawURLEncoding exactly: standard
+  // base64 (via btoa(unescape(encodeURIComponent(s))), which round-trips any
+  // Unicode text through a byte-for-byte "binary string" the way btoa
+  // requires), then the RFC 4648 §5 substitution (+ -> -, / -> _) and
+  // stripping the "=" padding raw base64url never carries. Kept as its own
+  // function so an encoding failure (browsers without atob/btoa Unicode
+  // support) can be reported distinctly from a network/validation failure.
+  function toBase64Url(s) {
+    var std = btoa(unescape(encodeURIComponent(s)));
+    return std.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  }
+
+  function saveConfigYAML() {
+    var errBox = document.getElementById("configYamlError");
+    var metaBox = document.getElementById("configYamlMeta");
+    var editor = document.getElementById("configYamlEditor");
+    errBox.hidden = true;
+    errBox.textContent = "";
+    var encoded;
+    try {
+      encoded = toBase64Url(editor.value);
+    } catch (err) {
+      errBox.hidden = false;
+      errBox.textContent = t("ui_config_yaml_encode_error");
+      return;
+    }
+    var url = base + "config-yaml/save?lang=" + encodeURIComponent(lang) +
+      "&mtime=" + encodeURIComponent(configYamlMtime) + "&content=" + encoded;
+    fetch(url, { cache: "no-store" })
+      .then(function (resp) { return resp.json().then(function (body) { return { ok: resp.ok, body: body }; }); })
+      .then(function (res) {
+        if (!res.ok) {
+          var body = res.body || {};
+          errBox.hidden = false;
+          if (typeof body.line === "number" && typeof body.column === "number") {
+            errBox.textContent = "第 " + body.line + " 行第 " + body.column + " 列：" + body.error;
+          } else {
+            errBox.textContent = body.error || t("ui_config_yaml_load_failed");
+          }
+          return;
+        }
+        configYamlMtime = res.body.mtime || "";
+        metaBox.textContent = (res.body.path || "") + "  ·  " + (res.body.message || "");
+        load();
+      })
+      .catch(function () {
+        errBox.hidden = false;
+        errBox.textContent = t("ui_config_yaml_load_failed");
+      });
+  }
+
+  document.getElementById("configYamlReloadBtn").addEventListener("click", loadConfigYAML);
+  document.getElementById("configYamlSaveBtn").addEventListener("click", saveConfigYAML);
+  // Tab inserts two spaces instead of moving focus out of the textarea --
+  // an editor for a 2-space-indented YAML file should not fight the
+  // browser's own default tab-to-next-control behavior.
+  document.getElementById("configYamlEditor").addEventListener("keydown", function (event) {
+    if (event.key !== "Tab") { return; }
+    event.preventDefault();
+    var el = event.target;
+    var start = el.selectionStart, end = el.selectionEnd;
+    el.value = el.value.slice(0, start) + "  " + el.value.slice(end);
+    el.selectionStart = el.selectionEnd = start + 2;
+  });
 
   document.getElementById("refreshBtn").addEventListener("click", load);
   document.getElementById("runBtn").addEventListener("click", function () {

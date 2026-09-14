@@ -19,7 +19,7 @@ Two-step quick start (v0.4.0+):
        cpa-quota-warmup:
          enabled: true
    ```
-2. The plugin generates `quota-warmup.yaml` next to `config.yaml` on its own, with one disabled section per credential file it finds. Open it, flip `enabled: false` to `enabled: true` for the accounts you want warmed up, and save -- no restart needed, the plugin picks it up within 30 seconds. Or do the same thing from the status panel (checkbox + Save button per row), described below.
+2. The plugin generates `quota-warmup.yaml` next to `config.yaml` on its own, with one disabled section per credential file it finds. Open it, flip `enabled: false` to `enabled: true` for the accounts you want warmed up, and save -- no restart needed, the plugin picks it up within 30 seconds. Or do the same thing from the status panel (checkbox + Save button per row), described below -- or edit the whole file directly from the panel's own "编辑配置文件" (edit config file) text editor, no SSH/text editor needed.
 
 Everything else -- timezone, base URL, api-key, message, rounds, ... -- is optional and auto-defaulted, or can be set under `config.yaml`'s `advanced:` block; see "高级设置（一般不用改）" below. Timezone defaults to the host process's own local timezone; no configuration needed.
 
@@ -51,7 +51,7 @@ CLIProxyAPI (CPA) 原生插件（Go c-shared 库）。每天在配置的时间�
          # config-file: "quota-warmup.yaml"   # 可选，默认 <cwd>/quota-warmup.yaml（与 config.yaml 同目录）
    ```
 
-2. 插件会在 `config.yaml` 同目录下**自动生成并维护** `quota-warmup.yaml`，每个认证文件一段、默认全部 `enabled: false`。打开这个文件，把要预热的账号改成 `enabled: true`，保存——**不用重启**，插件 30 秒内的下一次 tick 就会读到；也可以不手动改文件，直接在状态面板的账号表里勾选「启用」、按需改时间/模型，点「保存」，效果一样（面板顶部会显示这个文件的完整路径）。
+2. 插件会在 `config.yaml` 同目录下**自动生成并维护** `quota-warmup.yaml`，每个认证文件一段、默认全部 `enabled: false`。打开这个文件，把要预热的账号改成 `enabled: true`，保存——**不用重启**，插件 30 秒内的下一次 tick 就会读到；也可以不手动改文件，直接在状态面板的账号表里勾选「启用」、按需改时间/模型，点「保存」，效果一样（面板顶部会显示这个文件的完整路径）；**也可在面板『编辑配置文件』里直接改**——一个内嵌的文本编辑器，整份 `quota-warmup.yaml` 原文直接在浏览器里编辑保存，不用碰服务器/SSH。
 
 ## `quota-warmup.yaml` 详解
 
@@ -228,12 +228,19 @@ plugins:
 - **v0.1.0/v0.2.0 内联模式**：`/set` 直接返回 501，面板上没有可保存的编辑控件（这个格式本来就没有"面板覆盖"这一层）。
 - 模型校验规则两种模式一致：`model` 不是 `auto` 时必须出现在这次 `GET /v1/models` 的结果里，否则 400 并返回四语言错误信息；预检本身请求失败（网络问题等）会放行保存，但返回一条 `warning`。
 - **从 v0.3.0 升级**：如果你之前在 v0.3.0 内联模式下用过面板设置过模型（`overrides.json` 里有内容），现在把 `config.yaml` 简化成只剩 `enabled: true` 切到文件模式后，插件第一次启动会自动把 `overrides.json` 里的模型覆盖合并进新生成的 `quota-warmup.yaml`（按账号覆盖合并进对应账号段的 `model`；全局覆盖合并进 `defaults.model`），然后把 `overrides.json` 改名成 `overrides.json.migrated`，只做这一次。**这一步只迁移模型**，不会把之前"哪些账号被启用"的状态带过来——迁移后请手动确认 `quota-warmup.yaml` 里对应账号的 `enabled` 字段。
+- **v0.5.0：面板『编辑配置文件』在线编辑整份 `quota-warmup.yaml`**（仅文件模式）。账号表下方新增一个 `<textarea>`（等宽字体、Tab 键插入两个空格），「重新载入」拉取最新原文，「保存」提交修改：
+  - 读：`GET .../config-yaml` 返回 `{path, content, mtime, error}`（`content` 是文件原文，`error` 是当前的解析错误，不阻止显示）。
+  - 写：`GET .../config-yaml/save?content=<base64url 编码，无 padding>&mtime=<读到的 mtime>`。`content` 用 base64url 而不是直接拼进 query string，是为了绕开 GET 请求里换行/引号/中文这些字符的转义问题——面板 JS 用 `btoa(unescape(encodeURIComponent(text)))` 转标准 base64 再做 `+`→`-`、`/`→`_`、去 `=` 三步替换，服务端用 `base64.RawURLEncoding` 精确对应解码；解码后统一把 `\r\n`/`\r` 归一化成 `\n` 再校验/落盘。
+  - 校验顺序与保存顺序：**先校验**（`yaml.v3` 解析 + 反序列化进强类型结构，天然覆盖"顶层要是 `defaults`/`accounts` 结构""字段类型对不对"这些检查；额外单独校验每个 `time` 表达式必须能被解析，不能只是随便一个字符串），失败返回 `400 {error, line, column}` 且完全不碰磁盘；**再检查 `mtime`**，跟当前文件实际 mtime 不一致（比如另一个人或后台 tick 在这期间改过文件）返回 `409` 加提示"文件已被别处修改，请刷新"；都通过才原子写入（temp+rename）、立即重新解析生效（不用等下一次 tick），并把新 `mtime` 返回给前端。
+  - 面板上：校验失败时在编辑器上方用红字显示「第 N 行第 M 列：错误信息」；保存成功刷新账号表。
+  - 这几处新增的文案（区块标题、按钮、错误提示）**只做了中文**，没有走四语言（i18n 目录里这几个键四种语言填的是同一句中文，只是为了不破坏 key 集合一致性测试，不是真的翻译）。
+  - `mtime` 不是裸的文件系统时间戳字符串：实测发现两次紧挨着的原子写（temp+rename）在这台开发机的文件系统上会落在**完全相同**的纳秒级 `ModTime()` 上（见"已知限制"），所以实际的 token 是 `ModTime + 进程内写入序号` 拼出来的，保证同一个 `warmupFileManager` 实例做的任意两次写永远产生不同的 token。
 
 ## 部署
 
 ```bash
 cd ~/cpa-plugins/cpa-quota-warmup
-scripts/build.sh                 # -> dist/cpa-quota-warmup-v0.4.1.so (+ .sha256)
+scripts/build.sh                 # -> dist/cpa-quota-warmup-v0.5.0.so (+ .sha256)
 sudo ops/merge-config.py         # 原地合并默认配置到 /var/lib/cli-proxy-api/config.yaml（保 inode）
                                   # sudo ops/merge-config.py --remove 可移除
 sudo ops/deploy                  # 安装 .so 到插件目录并重启 cli-proxy-api.service
@@ -250,7 +257,7 @@ sudo ops/deploy                  # 安装 .so 到插件目录并重启 cli-proxy
 go vet ./... && go test ./...
 
 # 2. 真 ABI 集成测试（不需要真实宿主/网络）
-python3 integration_abi_test.py dist/cpa-quota-warmup-v0.4.1.so
+python3 integration_abi_test.py dist/cpa-quota-warmup-v0.5.0.so
 
 # 3. 部署后看宿主日志（host.log 回调，前缀 [cpa-quota-warmup]）
 journalctl -u cli-proxy-api | rg 'cpa-quota-warmup'
@@ -269,6 +276,11 @@ curl -s 'http://127.0.0.1:8317/v0/resource/plugins/cpa-quota-warmup/set?auth=ant
 
 # 8. cpa-usage-panel 里应该能看到这些请求（provider=对应 provider，model=配置的模型，
 #    时间落在计划的 HH:MM 附近），确认预热请求确实打到了上游而不是本地短路
+
+# 9. v0.5.0：面板在线编辑 quota-warmup.yaml（读 -> base64url 编码修改后的内容 -> 用读到的 mtime 保存）
+MTIME=$(curl -s 'http://127.0.0.1:8317/v0/resource/plugins/cpa-quota-warmup/config-yaml' | jq -r .mtime)
+CONTENT=$(printf 'defaults:\n  time: "05:30"\n  model: auto\naccounts: {}\n' | base64 -w0 | tr '+/' '-_' | tr -d '=')
+curl -s "http://127.0.0.1:8317/v0/resource/plugins/cpa-quota-warmup/config-yaml/save?content=${CONTENT}&mtime=${MTIME}" | jq .
 ```
 
 ## 宿主事实核实结果（与任务原始假设的出入）
@@ -311,6 +323,9 @@ curl -s 'http://127.0.0.1:8317/v0/resource/plugins/cpa-quota-warmup/set?auth=ant
 - **Node 级 YAML 编辑对"空 mapping 会被序列化成 flow style（`accounts: {}`）"这个 `yaml.v3` 行为做了专门规避**（否则再往里追加带行尾注释的账号段会生成语法错误的 YAML）；这是实现过程中用真实单元测试挖出的一个真 bug，已通过强制恢复 block style 修复，回归测试见 `warmupfile_test.go` 的 `TestWarmupFileManagerSetAccountCreatesMissingSection`。
 - overrides.json 迁移到 `quota-warmup.yaml` 只发生一次（迁移后原文件被重命名），且只搬运模型覆盖，不搬运"账号是否启用"的状态，见"面板与模型选择"一节。
 - 三种配置模式（文件 / v0.3.0 内联 / v0.1-v0.2 内联）互斥且按固定优先级探测（先查旧版顶层键，再查 v0.3.0 顶层键，都没有才是文件模式）；同一份 `config.yaml` 不支持混着写（比如顶层既有 `time:` 又想用文件模式）。
+- **`GET .../config-yaml`/`GET .../config-yaml/save` 和其他 resource 路由一样不做鉴权**（这是这类路由在这台宿主上的既有约束，见"机制"/"宿主事实核实结果"）——也就是说任何能访问到 CPA 这个端口的人都能读到/改写 `quota-warmup.yaml` 全文。**如果 CPA 暴露在公网或不受信任网络，请在反向代理层限制 `/v0/resource` 的访问**（比如只放行管理网段、加一层 Basic Auth/IP allowlist），插件自身不提供这层保护。
+- **`GET .../config-yaml/save` 的 `mtime` 冲突检测不是纯文件系统时间戳**：实测发现在这台开发机的文件系统上，两次紧挨着（无人为延迟）的原子写（temp+rename）会落在完全相同的纳秒级 `ModTime()` 上——如果直接拿 `ModTime()` 当 token，这种情况会被误判成"文件没变"，从而漏掉一次真实的并发冲突。已修复为 `ModTime + 本进程内的写入序号` 拼接成的 token（`mtimeToken`，见 `warmupfile.go`），保证同一个 `warmupFileManager` 实例做的任意两次写永远返回不同 token；但这只覆盖"这个进程自己做的写"之间的冲突检测，不同进程/外部编辑器在恰好同一纳秒各自写一次这种极端情况仍无法用纯 mtime 方案分辨（概率极低，且本来就不是这个机制设计要覆盖的场景）。回归测试见 `warmupfile_test.go` 的 `TestMtimeTokenDistinguishesWritesWithIdenticalModTime`/`TestOverwriteRawAlwaysProducesADistinctToken`。
+- `GET .../config-yaml/save` 的内容长度上限 256 KiB（按解码后的字节数算，不是 base64 编码后的 query string 长度），超过直接 400，不写盘。
 
 ## v0.1.1（线上手动触发实测后的修复）
 
@@ -372,3 +387,16 @@ curl -s 'http://127.0.0.1:8317/v0/resource/plugins/cpa-quota-warmup/set?auth=ant
 ## v0.4.1
 
 - 面板账号表版式整理：列顺序改为 名称/provider/启用/模型/时间点/下次触发/状态/操作，未启用账号显示灰色「未启用」，保存/自动按钮并入操作列。
+
+## v0.5.0（面板在线编辑 quota-warmup.yaml）
+
+线上验证 v0.4.0/v0.4.1 通过。这一版让面板直接内嵌一个文本编辑器，整份 `quota-warmup.yaml` 不用离开浏览器就能改：
+
+1. **新增两个路由**（仅文件模式，都是 GET）：`GET .../config-yaml` 返回 `{path, content, mtime, error}`；`GET .../config-yaml/save?content=<base64url 编码，无 padding>&mtime=<上次读到的 mtime>` 校验通过后原子写入并立即热加载、返回新 `mtime`。校验顺序：先 `yaml.v3` 解析 + 反序列化进强类型结构（天然覆盖 `defaults`/`accounts` 顶层结构、各字段类型是否正确），再额外校验每个 `time` 表达式必须真的能被解析（不能只是随便一个字符串）；失败一律 `400 {error, line, column}` 且不写盘（`line`/`column` 来自 `yaml.v3` 自己的错误文本或者已解析节点的 `Node.Line/Column`，1-based）；`mtime` 跟当前文件不一致返回 `409`（"文件已被别处修改，请刷新"）。
+2. **面板新增「编辑配置文件」区块**（账号表下方）：等宽字体 `<textarea>`、`spellcheck=false`、Tab 键插两个空格；「重新载入」「保存」两个按钮；只在文件模式下显示（`status` 的 `config.mode !== "file"` 时整块隐藏），首次进入文件模式时自动拉一次内容，之后只在手动点「重新载入」或保存成功后才刷新编辑器内容——**30 秒的后台自动刷新绝不碰这个编辑框**，避免打断正在输入的内容。校验失败在编辑器上方用红字显示「第 N 行第 M 列：错误信息」；保存成功刷新账号表。
+3. **转义与换行**：编辑器初始内容单独走 `GET .../config-yaml`（不复用 `status` 接口），用 `fetch` 拿到后 `textarea.value = content` 赋值，不把 YAML 内容拼进 HTML 模板（避免转义/XSS 问题）；提交时 `btoa(unescape(encodeURIComponent(text)))` 转标准 base64 再做 `+`→`-`、`/`→`_`、去 `=` 三步替换成 base64url，服务端 `base64.RawURLEncoding` 精确解码；解码后统一把 `\r\n`/`\r` 归一化成 `\n`。补测试覆盖含中文注释、引号、反斜杠、`#`、多行的 YAML 整个往返（编码→解码→写盘→再读回）字节级一致。
+4. **说明文字只保留中文**：这个功能新增的所有文案（编辑器区块标题/按钮、以及新增的服务端错误提示如"文件已被别处修改，请刷新"）都只写了中文，`i18n.go` 里对应的键四种语言表填的是同一句中文（不是真的四语言翻译，只是为了不破坏 `TestMessageCatalogsHaveTheSameKeys` 的 key 集合一致性检查）；`ConfigFields` 的三条说明也从"中文 / English"双语改成纯中文。已生成的 `quota-warmup.yaml` 头部注释和 `# provider: xxx` 行尾注释本来就是纯中文，不用改。
+5. **安全**：`GET .../config-yaml`/`GET .../config-yaml/save` 和其他 resource 路由一样不做鉴权；README 新增提示——面板现在能读写配置文件全文了，CPA 若暴露在公网/不受信任网络，请在反代层限制 `/v0/resource` 的访问。
+6. **实现过程中用真实测试挖出一个真 bug**：两次紧挨着（无人为延迟）的原子写（`os.CreateTemp` + `os.Rename`）在这台开发机的文件系统上会落在完全相同的纳秒级 `ModTime()` 上——如果直接拿 `ModTime()` 当 `mtime` token，会把一次真实的"文件在两次读写之间被改过"的冲突误判成"没变"，从而允许一次本该被拒绝的覆盖写入。用 ABI 集成测试（连续三次 `/config-yaml/save` 调用）实测复现后，改成 `ModTime + 本进程内写入序号` 拼接出的 token（见 `warmupfile.go` 的 `mtimeToken`/`writeSeq`），保证同一个 `warmupFileManager` 实例做的任意两次写永远返回不同 token；回归测试 `TestMtimeTokenDistinguishesWritesWithIdenticalModTime`/`TestOverwriteRawAlwaysProducesADistinctToken`。
+7. 新增/更新测试：`management_config_yaml_test.go`（读取内容/路径/mtime、含中文注释引号反斜杠井号多行的保存往返、CRLF 归一化、无效时间表达式的 400+line+column、畸形 YAML 语法的 400、过期 mtime 的 409 冲突、缺参数的 400、非文件模式下两个路由都是 501）、`warmupfile_test.go` 新增两条 mtime token 回归测试、`panel_test.go` 未新增（本次面板改动只是新增一个区块，未改动既有的 i18n 覆盖测试所覆盖的元素结构）。ABI 集成测试新增 `/config-yaml` 读、`/config-yaml/save` 保存成功、校验失败三条断言（外加一条 mtime 冲突的 409 断言），并把 `Resources` 路径的期望列表更新为 6 条（末尾追加 `/config-yaml`、`/config-yaml/save`）。
+8. `pluginVersion` 升到 `0.5.0`。

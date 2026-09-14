@@ -11,7 +11,7 @@ import (
 
 const (
 	pluginName    = "cpa-quota-warmup"
-	pluginVersion = "0.4.1"
+	pluginVersion = "0.5.0"
 	logPrefix     = "[cpa-quota-warmup] "
 )
 
@@ -162,8 +162,11 @@ func registrationPayload() any {
 			GitHubRepository: "https://github.com/router-for-me/CLIProxyAPI",
 			// Descriptions are static strings fixed at plugin.register time, so
 			// they cannot follow a visiting browser's language the way host.log
-			// lines and the status/run JSON do (see i18n.go). Each is one
-			// bilingual sentence (中文 / English) instead.
+			// lines and the status/run JSON do (see i18n.go). They used to be
+			// one bilingual sentence (中文 / English) each; v0.5.0 switched
+			// them to Chinese-only per the coordinator's explicit instruction
+			// (this operator-facing config surface is Chinese-first, unlike
+			// the fully-localized status/run JSON and panel page).
 			//
 			// v0.4.0 reduced this list further to just 3 entries: even
 			// per-account schedule/model configuration is no longer done in
@@ -175,9 +178,9 @@ func registrationPayload() any {
 			// parse exactly as before (see config.go's legacyMode/
 			// v3InlineMode) but are intentionally no longer advertised here.
 			ConfigFields: []pluginapi.ConfigField{
-				{Name: "enabled", Type: pluginapi.ConfigFieldTypeBoolean, Description: "为 false 时插件完全不预热任何账号 / When false, the plugin never warms up any account."},
-				{Name: "config-file", Type: pluginapi.ConfigFieldTypeString, Description: "账号预热配置文件路径，默认 <CPA 工作目录>/quota-warmup.yaml；该文件由插件自动生成与维护，每个认证文件一段，直接改这个文件即可（无需重启），也可以在面板上编辑 / Path to the per-account warmup config file. Defaults to <CPA working directory>/quota-warmup.yaml. The plugin generates and maintains this file itself (one section per auth file); edit it directly (no restart needed), or edit it from the panel."},
-				{Name: "advanced", Type: pluginapi.ConfigFieldTypeObject, Description: "高级设置，一般不用改，全部可选：timezone（默认跟随宿主进程本地时区）、base-url（默认 http://127.0.0.1:8317）、api-key（默认读取宿主 config.yaml 的 api-keys[0]）、message（默认 \"hi\"）、max-tokens（默认 16）、max-rounds（默认 3）、catch-up-minutes（默认 60）、language（默认 auto）、log（默认 true） / Advanced settings, all optional and rarely needed: timezone (defaults to the host process's local timezone), base-url (default http://127.0.0.1:8317), api-key (default: api-keys[0] from the host's own config.yaml), message (default \"hi\"), max-tokens (default 16), max-rounds (default 3), catch-up-minutes (default 60), language (default auto), log (default true)."},
+				{Name: "enabled", Type: pluginapi.ConfigFieldTypeBoolean, Description: "为 false 时插件完全不预热任何账号"},
+				{Name: "config-file", Type: pluginapi.ConfigFieldTypeString, Description: "账号预热配置文件路径，默认 <CPA 工作目录>/quota-warmup.yaml；该文件由插件自动生成与维护，每个认证文件一段，直接改这个文件即可（无需重启），也可以在面板上编辑"},
+				{Name: "advanced", Type: pluginapi.ConfigFieldTypeObject, Description: "高级设置，一般不用改，全部可选：timezone（默认跟随宿主进程本地时区）、base-url（默认 http://127.0.0.1:8317）、api-key（默认读取宿主 config.yaml 的 api-keys[0]）、message（默认 \"hi\"）、max-tokens（默认 16）、max-rounds（默认 3）、catch-up-minutes（默认 60）、language（默认 auto）、log（默认 true）"},
 			},
 		},
 		Capabilities: map[string]bool{"usage_plugin": true, "management_api": true},

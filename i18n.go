@@ -138,6 +138,31 @@ const (
 	msgUILabelConfigFile msgKey = "ui_label_config_file"
 	msgUILabelParseError msgKey = "ui_label_parse_error"
 	msgUITimePlaceholder msgKey = "ui_time_placeholder"
+
+	// v0.5.0 additions: the panel's "编辑配置文件" (edit config file) online
+	// editor for quota-warmup.yaml, and its backing GET .../config-yaml and
+	// GET .../config-yaml/save routes. Per the coordinator's explicit
+	// instruction, every string introduced for this feature (server-side
+	// error/status text and the editor's own UI labels alike) is Chinese
+	// text stored identically in all four language maps below -- not a real
+	// per-language translation like every other key in this catalog -- so
+	// there is nothing to translate here, only to keep
+	// TestMessageCatalogsHaveTheSameKeys passing.
+	msgConfigYAMLNotFileMode    msgKey = "config_yaml_not_file_mode"
+	msgConfigYAMLReadFailed     msgKey = "config_yaml_read_failed"
+	msgConfigYAMLMissingContent msgKey = "config_yaml_missing_content"
+	msgConfigYAMLMissingMtime   msgKey = "config_yaml_missing_mtime"
+	msgConfigYAMLInvalidBase64  msgKey = "config_yaml_invalid_base64"
+	msgConfigYAMLTooLarge       msgKey = "config_yaml_too_large"
+	msgConfigYAMLConflict       msgKey = "config_yaml_conflict"
+	msgConfigYAMLWriteFailed    msgKey = "config_yaml_write_failed"
+	msgConfigYAMLSaved          msgKey = "config_yaml_saved"
+
+	msgUISectionConfigYAML     msgKey = "ui_section_config_yaml"
+	msgUIConfigYAMLReload      msgKey = "ui_config_yaml_reload"
+	msgUIConfigYAMLSave        msgKey = "ui_config_yaml_save"
+	msgUIConfigYAMLLoadFailed  msgKey = "ui_config_yaml_load_failed"
+	msgUIConfigYAMLEncodeError msgKey = "ui_config_yaml_encode_error"
 )
 
 // messagesEN is the source-of-truth key set: every other language map is
@@ -241,6 +266,22 @@ var messagesEN = map[msgKey]string{
 	msgUILabelConfigFile:  "Config file path",
 	msgUILabelParseError:  "Parse error",
 	msgUITimePlaceholder:  "Time, e.g. 05:30 or a cron expression",
+
+	msgConfigYAMLNotFileMode:    "该功能仅文件模式（quota-warmup.yaml）下可用",
+	msgConfigYAMLReadFailed:     "读取配置文件失败：%v",
+	msgConfigYAMLMissingContent: "缺少 content 参数",
+	msgConfigYAMLMissingMtime:   "缺少 mtime 参数",
+	msgConfigYAMLInvalidBase64:  "content 不是合法的 base64url 编码",
+	msgConfigYAMLTooLarge:       "内容超过 256 KiB 上限",
+	msgConfigYAMLConflict:       "文件已被别处修改，请刷新",
+	msgConfigYAMLWriteFailed:    "写入配置文件失败：%v",
+	msgConfigYAMLSaved:          "已保存并重新加载",
+
+	msgUISectionConfigYAML:     "编辑配置文件",
+	msgUIConfigYAMLReload:      "重新载入",
+	msgUIConfigYAMLSave:        "保存",
+	msgUIConfigYAMLLoadFailed:  "配置文件加载失败",
+	msgUIConfigYAMLEncodeError: "内容编码失败，请检查浏览器兼容性",
 }
 
 var messagesZhCN = map[msgKey]string{
@@ -342,6 +383,22 @@ var messagesZhCN = map[msgKey]string{
 	msgUILabelConfigFile:  "配置文件路径",
 	msgUILabelParseError:  "解析错误",
 	msgUITimePlaceholder:  "时间，如 05:30 或 cron 表达式",
+
+	msgConfigYAMLNotFileMode:    "该功能仅文件模式（quota-warmup.yaml）下可用",
+	msgConfigYAMLReadFailed:     "读取配置文件失败：%v",
+	msgConfigYAMLMissingContent: "缺少 content 参数",
+	msgConfigYAMLMissingMtime:   "缺少 mtime 参数",
+	msgConfigYAMLInvalidBase64:  "content 不是合法的 base64url 编码",
+	msgConfigYAMLTooLarge:       "内容超过 256 KiB 上限",
+	msgConfigYAMLConflict:       "文件已被别处修改，请刷新",
+	msgConfigYAMLWriteFailed:    "写入配置文件失败：%v",
+	msgConfigYAMLSaved:          "已保存并重新加载",
+
+	msgUISectionConfigYAML:     "编辑配置文件",
+	msgUIConfigYAMLReload:      "重新载入",
+	msgUIConfigYAMLSave:        "保存",
+	msgUIConfigYAMLLoadFailed:  "配置文件加载失败",
+	msgUIConfigYAMLEncodeError: "内容编码失败，请检查浏览器兼容性",
 }
 
 var messagesZhTW = map[msgKey]string{
@@ -443,6 +500,22 @@ var messagesZhTW = map[msgKey]string{
 	msgUILabelConfigFile:  "設定檔路徑",
 	msgUILabelParseError:  "解析錯誤",
 	msgUITimePlaceholder:  "時間，如 05:30 或 cron 表達式",
+
+	msgConfigYAMLNotFileMode:    "该功能仅文件模式（quota-warmup.yaml）下可用",
+	msgConfigYAMLReadFailed:     "读取配置文件失败：%v",
+	msgConfigYAMLMissingContent: "缺少 content 参数",
+	msgConfigYAMLMissingMtime:   "缺少 mtime 参数",
+	msgConfigYAMLInvalidBase64:  "content 不是合法的 base64url 编码",
+	msgConfigYAMLTooLarge:       "内容超过 256 KiB 上限",
+	msgConfigYAMLConflict:       "文件已被别处修改，请刷新",
+	msgConfigYAMLWriteFailed:    "写入配置文件失败：%v",
+	msgConfigYAMLSaved:          "已保存并重新加载",
+
+	msgUISectionConfigYAML:     "编辑配置文件",
+	msgUIConfigYAMLReload:      "重新载入",
+	msgUIConfigYAMLSave:        "保存",
+	msgUIConfigYAMLLoadFailed:  "配置文件加载失败",
+	msgUIConfigYAMLEncodeError: "内容编码失败，请检查浏览器兼容性",
 }
 
 // messagesRU. Written as natural technical Russian, not a machine-translated
@@ -551,6 +624,22 @@ var messagesRU = map[msgKey]string{
 	msgUILabelConfigFile:  "Путь к файлу конфигурации",
 	msgUILabelParseError:  "Ошибка разбора",
 	msgUITimePlaceholder:  "Время, например 05:30 или cron-выражение",
+
+	msgConfigYAMLNotFileMode:    "该功能仅文件模式（quota-warmup.yaml）下可用",
+	msgConfigYAMLReadFailed:     "读取配置文件失败：%v",
+	msgConfigYAMLMissingContent: "缺少 content 参数",
+	msgConfigYAMLMissingMtime:   "缺少 mtime 参数",
+	msgConfigYAMLInvalidBase64:  "content 不是合法的 base64url 编码",
+	msgConfigYAMLTooLarge:       "内容超过 256 KiB 上限",
+	msgConfigYAMLConflict:       "文件已被别处修改，请刷新",
+	msgConfigYAMLWriteFailed:    "写入配置文件失败：%v",
+	msgConfigYAMLSaved:          "已保存并重新加载",
+
+	msgUISectionConfigYAML:     "编辑配置文件",
+	msgUIConfigYAMLReload:      "重新载入",
+	msgUIConfigYAMLSave:        "保存",
+	msgUIConfigYAMLLoadFailed:  "配置文件加载失败",
+	msgUIConfigYAMLEncodeError: "内容编码失败，请检查浏览器兼容性",
 }
 
 var messagesByLang = map[lang]map[msgKey]string{

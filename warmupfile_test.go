@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
@@ -323,5 +324,45 @@ func TestResolveFileAuthRespectsEnabledAndDefaults(t *testing.T) {
 	}
 	if c := resolveFileAuth(data, "c.json", "codex"); c.Selected {
 		t.Fatalf("expected an account absent from the file to not be selected, got %+v", c)
+	}
+}
+
+// TestMtimeTokenDistinguishesWritesWithIdenticalModTime locks in the fix for
+// a real, reproducible bug found while testing this feature: two atomic
+// (temp file + rename) writes executed back-to-back with no artificial
+// delay were observed to land on the exact same OS-reported ModTime on this
+// project's own dev filesystem, which would make /config-yaml/save's
+// optimistic-concurrency check silently treat a genuine same-instant
+// conflict as "unchanged" if the token were derived from ModTime alone.
+// mtimeToken's writeSeq suffix must disambiguate them even when ModTime is
+// identical.
+func TestMtimeTokenDistinguishesWritesWithIdenticalModTime(t *testing.T) {
+	same := time.Date(2026, 9, 14, 8, 0, 0, 123456789, time.UTC)
+	t0 := mtimeToken(same, 0)
+	t1 := mtimeToken(same, 1)
+	if t0 == t1 {
+		t.Fatalf("mtimeToken(sameTime, 0) == mtimeToken(sameTime, 1) == %q, want distinct tokens", t0)
+	}
+}
+
+// TestOverwriteRawAlwaysProducesADistinctToken exercises the realistic path
+// (two real writes through the manager, not a synthetic ModTime) and asserts
+// the invariant the fix above guarantees unconditionally: every successful
+// overwriteRaw call returns a token that differs from the immediately
+// preceding one, regardless of whether the underlying filesystem's clock
+// resolution happened to collide for these two particular writes.
+func TestOverwriteRawAlwaysProducesADistinctToken(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "quota-warmup.yaml")
+	m := newWarmupFileManager(path)
+	first, err := m.overwriteRaw([]byte("defaults:\n  time: \"05:30\"\n  model: auto\naccounts: {}\n"))
+	if err != nil {
+		t.Fatalf("first overwriteRaw: %v", err)
+	}
+	second, err := m.overwriteRaw([]byte("defaults:\n  time: \"06:00\"\n  model: auto\naccounts: {}\n"))
+	if err != nil {
+		t.Fatalf("second overwriteRaw: %v", err)
+	}
+	if first == second {
+		t.Fatalf("two successive overwriteRaw calls returned the same token %q, want distinct tokens", first)
 	}
 }

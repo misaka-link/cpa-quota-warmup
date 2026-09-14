@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -44,6 +45,34 @@ const (
 	setQueryTimeKey    = "time"
 	setScopeGlobal     = "global"
 	setScopeAuth       = "auth"
+
+	// resourceConfigYAMLPath/resourceConfigYAMLSavePath are v0.5.0's panel
+	// "编辑配置文件" (edit config file) online editor for quota-warmup.yaml:
+	// a GET-only read (see resourceRunPath's doc comment for why every
+	// action/data route on this resource base is GET, never POST) and a
+	// GET-only save that takes the whole file's content as a base64url
+	// query parameter rather than a request body, for the same reason.
+	// Both are file-mode only (see handleConfigYAMLRequest).
+	resourceConfigYAMLPath     = "/config-yaml"
+	resourceConfigYAMLSavePath = "/config-yaml/save"
+
+	// configYAMLQuery* are /config-yaml/save's query parameters. content is
+	// base64url (RFC 4648 §5), no padding -- exactly what
+	// base64.RawURLEncoding decodes, and exactly what a browser produces via
+	// btoa(unescape(encodeURIComponent(text))) followed by the +/- , //_,
+	// strip-"=" substitution (see panel.go's saveConfigYAML) -- chosen so the
+	// full file content, including newlines and any character at all, can
+	// ride a GET query string with zero URL-escaping concerns. mtime is the
+	// opaque token mtimeString produced for whatever version of the file the
+	// editor last read (via GET .../config-yaml or a prior successful save).
+	configYAMLQueryContentKey = "content"
+	configYAMLQueryMtimeKey   = "mtime"
+
+	// configYAMLMaxContentBytes caps the *decoded* file content at 256 KiB,
+	// per the v0.5.0 spec -- comfortably above any real quota-warmup.yaml
+	// (one short section per auth file) while still bounding worst-case
+	// memory/parse cost from an arbitrary GET query string.
+	configYAMLMaxContentBytes = 256 * 1024
 )
 
 func managementRegistration() pluginapi.ManagementRegistrationResponse {
@@ -72,6 +101,17 @@ func managementRegistration() pluginapi.ManagementRegistrationResponse {
 				Path:        resourceSetPath,
 				Description: "保存面板编辑（仅 GET）。默认文件模式：?auth=<name>&enabled=<bool>&time=<...>&model=<id|auto>，直接写回 quota-warmup.yaml；旧版内联模式：?scope=global|auth&auth=<name>&model=<id|auto> / Save a panel edit (GET only). Default file mode: ?auth=<name>&enabled=<bool>&time=<...>&model=<id|auto>, written directly into quota-warmup.yaml. Legacy v3-inline mode: ?scope=global|auth&auth=<name>&model=<id|auto>.",
 			},
+			{
+				// No menu label: this is the "编辑配置文件" editor's own JSON
+				// data feed (file mode only).
+				Path:        resourceConfigYAMLPath,
+				Description: "quota-warmup.yaml 的原始内容（供面板『编辑配置文件』使用，仅文件模式）/ Raw contents of quota-warmup.yaml (for the panel's \"edit config file\" editor; file mode only).",
+			},
+			{
+				// No menu label: this is an action endpoint, not a page.
+				Path:        resourceConfigYAMLSavePath,
+				Description: "保存面板『编辑配置文件』的修改（仅 GET）：?content=<base64url 编码的 YAML，无 padding>&mtime=<上次读取到的 mtime>；先校验（失败返回 {error,line,column} 且不写盘），mtime 不一致返回冲突提示，通过则原子写入并立即热加载 / Save an edit from the panel's \"edit config file\" editor (GET only): ?content=<base64url-encoded YAML, no padding>&mtime=<the mtime last read>. Validates first (failure returns {error,line,column}, no write); a stale mtime is rejected as a conflict; on success, writes atomically and hot-reloads immediately.",
+			},
 		},
 	}
 }
@@ -86,6 +126,10 @@ func handleManagementRequest(raw []byte) ([]byte, error) {
 	trimmed := strings.TrimRight(req.Path, "/")
 	var resp pluginapi.ManagementResponse
 	switch {
+	case strings.HasSuffix(trimmed, resourceConfigYAMLSavePath):
+		resp = handleConfigYAMLSaveRequest(req)
+	case strings.HasSuffix(trimmed, resourceConfigYAMLPath):
+		resp = handleConfigYAMLRequest(req)
 	case strings.HasSuffix(trimmed, resourceRunPath):
 		resp = handleRunRequest(req)
 	case strings.HasSuffix(trimmed, resourceSetPath):
@@ -676,4 +720,150 @@ func handleSetRequestFile(e *engine, cfg pluginConfig, l lang, req pluginapi.Man
 
 	result := setResult{Lang: string(l), Auth: authName, Enabled: update.Enabled, Time: timeRaw, Model: model, Message: tr(l, msgSetSaved), Warning: warning}
 	return jsonManagementResponse(http.StatusOK, result)
+}
+
+// configYAMLPayload is the /config-yaml route's read response: the panel's
+// "编辑配置文件" editor fetches this once (on load, on "重新载入", and again
+// after a successful save) and assigns Content to its <textarea> via
+// .value = ..., never by interpolating it into the HTML template -- see
+// panel.go's loadConfigYAML. Error (when non-empty) is the file's current
+// parse error, if any -- content is still returned verbatim so the operator
+// can fix it in place, exactly like the "解析失败绝不影响调度" contract for
+// the scheduler itself (see warmupFileManager's own doc comment).
+type configYAMLPayload struct {
+	Lang    string `json:"lang"`
+	Path    string `json:"path"`
+	Content string `json:"content"`
+	Mtime   string `json:"mtime"`
+	Error   string `json:"error,omitempty"`
+}
+
+// configYAMLSaveResult is /config-yaml/save's success response.
+type configYAMLSaveResult struct {
+	Lang    string `json:"lang"`
+	Path    string `json:"path"`
+	Mtime   string `json:"mtime"`
+	Message string `json:"message"`
+}
+
+// configYAMLErrorResult is /config-yaml/save's validation-failure response:
+// {error, line, column}, exactly the v0.5.0 spec's shape, so the panel's
+// editor can render "第 N 行第 M 列：错误信息" without any further parsing.
+type configYAMLErrorResult struct {
+	Lang   string `json:"lang"`
+	Error  string `json:"error"`
+	Line   int    `json:"line,omitempty"`
+	Column int    `json:"column,omitempty"`
+}
+
+// handleConfigYAMLRequest serves the panel's "编辑配置文件" editor its
+// current content. File mode only -- v3InlineMode/legacyMode have no
+// externally maintained file to edit here (v3InlineMode's own panel editing
+// is model-only, via /set; see handleSetRequestInline).
+func handleConfigYAMLRequest(req pluginapi.ManagementRequest) pluginapi.ManagementResponse {
+	e := activeEngine()
+	if e == nil {
+		l := requestLang(nil, req)
+		return jsonManagementResponse(http.StatusServiceUnavailable, map[string]string{"error": tr(l, msgEngineNotRunning), "lang": string(l)})
+	}
+	cfg := e.config()
+	l := requestLang(&cfg, req)
+	if cfg.legacyMode || cfg.v3InlineMode || e.warmupFile == nil {
+		return jsonManagementResponse(http.StatusNotImplemented, map[string]string{"error": tr(l, msgConfigYAMLNotFileMode), "lang": string(l)})
+	}
+
+	// Same opportunistic ensureFresh as handleStatusRequest/
+	// handleSetRequestFile: a read right after plugin.register, before the
+	// first tick, should still see a freshly generated file rather than
+	// erroring because nothing has created it on disk yet. Skipped (not
+	// fatal) if host.auth.list itself is failing right now -- the read
+	// below just falls back to whatever is already on disk.
+	if entries, err := e.auths.ListAuths(); err == nil {
+		_ = e.warmupFile.ensureFresh(entries)
+	}
+
+	raw, token, err := e.warmupFile.readForEditor()
+	if err != nil {
+		return jsonManagementResponse(http.StatusInternalServerError, map[string]string{"error": tr(l, msgConfigYAMLReadFailed, err), "lang": string(l)})
+	}
+	_, parseErr := e.warmupFile.snapshot()
+	return jsonManagementResponse(http.StatusOK, configYAMLPayload{
+		Lang:    string(l),
+		Path:    e.warmupFile.path,
+		Content: string(raw),
+		Mtime:   token,
+		Error:   parseErr,
+	})
+}
+
+// handleConfigYAMLSaveRequest validates and, if valid, persists an edit from
+// the panel's "编辑配置文件" editor. File mode only (see
+// handleConfigYAMLRequest). Order of checks matches the v0.5.0 spec exactly:
+// validate first (a syntax/structural/business-rule failure returns
+// {error,line,column} without touching mtime at all), then check mtime for a
+// conflict, then write.
+func handleConfigYAMLSaveRequest(req pluginapi.ManagementRequest) pluginapi.ManagementResponse {
+	e := activeEngine()
+	if e == nil {
+		l := requestLang(nil, req)
+		return jsonManagementResponse(http.StatusServiceUnavailable, map[string]string{"error": tr(l, msgEngineNotRunning), "lang": string(l)})
+	}
+	cfg := e.config()
+	l := requestLang(&cfg, req)
+	if cfg.legacyMode || cfg.v3InlineMode || e.warmupFile == nil {
+		return jsonManagementResponse(http.StatusNotImplemented, map[string]string{"error": tr(l, msgConfigYAMLNotFileMode), "lang": string(l)})
+	}
+
+	var contentRaw, mtimeRaw string
+	if req.Query != nil {
+		contentRaw = req.Query.Get(configYAMLQueryContentKey)
+		mtimeRaw = strings.TrimSpace(req.Query.Get(configYAMLQueryMtimeKey))
+	}
+	if contentRaw == "" {
+		return jsonManagementResponse(http.StatusBadRequest, map[string]string{"error": tr(l, msgConfigYAMLMissingContent), "lang": string(l)})
+	}
+	if mtimeRaw == "" {
+		return jsonManagementResponse(http.StatusBadRequest, map[string]string{"error": tr(l, msgConfigYAMLMissingMtime), "lang": string(l)})
+	}
+
+	decoded, err := base64.RawURLEncoding.DecodeString(contentRaw)
+	if err != nil {
+		return jsonManagementResponse(http.StatusBadRequest, map[string]string{"error": tr(l, msgConfigYAMLInvalidBase64), "lang": string(l)})
+	}
+	if len(decoded) > configYAMLMaxContentBytes {
+		return jsonManagementResponse(http.StatusBadRequest, map[string]string{"error": tr(l, msgConfigYAMLTooLarge), "lang": string(l)})
+	}
+
+	// Normalize CRLF (and lone CR) to LF before validating/writing, so a
+	// Windows-side browser's <textarea> never leaves mixed line endings in
+	// the file on disk.
+	content := strings.ReplaceAll(strings.ReplaceAll(string(decoded), "\r\n", "\n"), "\r", "\n")
+
+	if _, verr := validateWarmupYAMLContent([]byte(content)); verr != nil {
+		return jsonManagementResponse(http.StatusBadRequest, configYAMLErrorResult{Lang: string(l), Error: verr.Message, Line: verr.Line, Column: verr.Column})
+	}
+
+	// Same opportunistic ensureFresh as the read side -- also makes sure
+	// currentMtimeToken() below reflects any reconciliation (new/vanished
+	// accounts) that just happened, not a stale pre-reconciliation token.
+	if entries, err := e.auths.ListAuths(); err == nil {
+		_ = e.warmupFile.ensureFresh(entries)
+	}
+
+	currentToken, statErr := e.warmupFile.currentMtimeToken()
+	if statErr != nil || currentToken != mtimeRaw {
+		return jsonManagementResponse(http.StatusConflict, map[string]string{"error": tr(l, msgConfigYAMLConflict), "lang": string(l)})
+	}
+
+	newMtime, writeErr := e.warmupFile.overwriteRaw([]byte(content))
+	if writeErr != nil {
+		return jsonManagementResponse(http.StatusInternalServerError, map[string]string{"error": tr(l, msgConfigYAMLWriteFailed, writeErr), "lang": string(l)})
+	}
+
+	return jsonManagementResponse(http.StatusOK, configYAMLSaveResult{
+		Lang:    string(l),
+		Path:    e.warmupFile.path,
+		Mtime:   newMtime,
+		Message: tr(l, msgConfigYAMLSaved),
+	})
 }

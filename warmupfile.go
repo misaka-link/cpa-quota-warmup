@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -91,6 +93,20 @@ type warmupFileManager struct {
 	loadedAt   time.Time
 	everLoaded bool
 	parseErr   string
+
+	// writeSeq counts every successful write this manager has made to path
+	// (via writeAtomicLocked, from writeLocked or overwriteRaw), and is
+	// mixed into every mtime token this manager hands out (see
+	// mtimeToken/readForEditor/currentMtimeToken). This was added after a
+	// real, reproducible collision: two atomic (temp file + rename) writes
+	// executed back-to-back with no artificial delay landed on the exact
+	// same OS-reported ModTime on this project's own dev filesystem (a
+	// single-digit-microsecond race, not a hypothetical) -- see
+	// warmupfile_test.go's TestMtimeTokenDistinguishesWritesWithIdenticalModTime
+	// and README's known-limitations note. Relying on ModTime() alone would
+	// make /config-yaml/save's optimistic-concurrency check silently miss a
+	// same-instant conflict.
+	writeSeq uint64
 }
 
 func newWarmupFileManager(path string) *warmupFileManager {
@@ -372,6 +388,16 @@ func (m *warmupFileManager) writeLocked(root *yaml.Node) error {
 	if err := enc.Close(); err != nil {
 		return fmt.Errorf("encode %s: %w", m.path, err)
 	}
+	return m.writeAtomicLocked(buf.Bytes())
+}
+
+// writeAtomicLocked writes data to m.path via a temp file + rename in the
+// same directory (so a reader never observes a partially-written file), then
+// bumps writeSeq on success. Callers must hold m.mu. Shared by writeLocked
+// (yaml.Node-based writes -- generation/reconciliation/setAccount) and
+// overwriteRaw (the /config-yaml/save route's raw-bytes write, once
+// validateWarmupYAMLContent has already accepted the content).
+func (m *warmupFileManager) writeAtomicLocked(data []byte) error {
 	if err := os.MkdirAll(filepath.Dir(m.path), 0o755); err != nil {
 		return fmt.Errorf("create dir for %s: %w", m.path, err)
 	}
@@ -381,7 +407,7 @@ func (m *warmupFileManager) writeLocked(root *yaml.Node) error {
 	}
 	tmpPath := tmp.Name()
 	defer func() { _ = os.Remove(tmpPath) }()
-	if _, err := tmp.Write(buf.Bytes()); err != nil {
+	if _, err := tmp.Write(data); err != nil {
 		_ = tmp.Close()
 		return fmt.Errorf("write temp file for %s: %w", m.path, err)
 	}
@@ -395,7 +421,195 @@ func (m *warmupFileManager) writeLocked(root *yaml.Node) error {
 	if err := os.Rename(tmpPath, m.path); err != nil {
 		return fmt.Errorf("rename temp file for %s: %w", m.path, err)
 	}
+	m.writeSeq++
 	return nil
+}
+
+// mtimeToken formats modTime plus this manager's own write-sequence counter
+// as the opaque comparison token the /config-yaml and /config-yaml/save
+// routes use for optimistic concurrency (see handleConfigYAMLSaveRequest in
+// management.go): a save is rejected unless its ?mtime= exactly matches the
+// file's current token, so a stale edit is never silently overwritten.
+//
+// The seq suffix exists because ModTime() alone is not always enough: two
+// atomic (temp file + rename) writes executed back-to-back with no
+// artificial delay were observed, for real, to land on the exact same
+// OS-reported ModTime on this project's own dev filesystem -- see writeSeq's
+// doc comment and TestMtimeTokenDistinguishesWritesWithIdenticalModTime.
+//
+// RFC3339Nano (a string), not UnixNano (an int64 JSON number), is used for
+// the timestamp part deliberately: a nanosecond Unix timestamp exceeds
+// float64's 53-bit exact-integer range, so a naive number would round-trip
+// lossily through JSON in a JS client, corrupting the very equality check
+// this exists for.
+func mtimeToken(modTime time.Time, seq uint64) string {
+	return modTime.UTC().Format(time.RFC3339Nano) + "-" + strconv.FormatUint(seq, 10)
+}
+
+// currentMtimeToken stats m.path and formats its mtime token (mtimeToken),
+// for the /config-yaml/save route's optimistic-concurrency check.
+func (m *warmupFileManager) currentMtimeToken() (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	info, err := os.Stat(m.path)
+	if err != nil {
+		return "", err
+	}
+	return mtimeToken(info.ModTime(), m.writeSeq), nil
+}
+
+// readForEditor returns m.path's current raw content plus its mtime token,
+// read together while holding m.mu so the token always corresponds to
+// exactly the content returned. Used by the /config-yaml route (the panel's
+// "编辑配置文件" editor).
+func (m *warmupFileManager) readForEditor() (content []byte, token string, err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	raw, err := os.ReadFile(m.path)
+	if err != nil {
+		return nil, "", err
+	}
+	info, statErr := os.Stat(m.path)
+	if statErr != nil {
+		return nil, "", statErr
+	}
+	return raw, mtimeToken(info.ModTime(), m.writeSeq), nil
+}
+
+// overwriteRaw is the /config-yaml/save route's write path: content has
+// already been accepted by validateWarmupYAMLContent by the time this is
+// called, so this only needs to persist it and refresh the manager's own
+// in-memory root/data (reparseLocked) so the very next status/set/tick call
+// reflects the edit immediately, without waiting for the next ensureFresh
+// poll.
+func (m *warmupFileManager) overwriteRaw(content []byte) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err := m.writeAtomicLocked(content); err != nil {
+		return "", err
+	}
+	if err := m.reparseLocked(); err != nil {
+		// content was just validated moments ago, so this should not
+		// normally happen -- but the write already succeeded, and a parse
+		// failure here must be handled exactly like any hand-edit outside
+		// the panel (see ensureFresh's doc comment): surface it, never lose
+		// the write over it.
+		m.parseErr = err.Error()
+	} else {
+		m.parseErr = ""
+	}
+	info, statErr := os.Stat(m.path)
+	if statErr != nil {
+		return "", statErr
+	}
+	return mtimeToken(info.ModTime(), m.writeSeq), nil
+}
+
+// configYAMLValidationError is validateWarmupYAMLContent's failure shape. It
+// is also, verbatim, the /config-yaml/save route's {error, line, column} JSON
+// failure body (see management.go's handleConfigYAMLSaveRequest). Line/Column
+// are always >= 1 (1-based, matching how an editor reports position) even
+// when the real position cannot be recovered, so a client can always place a
+// cursor from them rather than special-casing 0.
+type configYAMLValidationError struct {
+	Message string
+	Line    int
+	Column  int
+}
+
+func (e *configYAMLValidationError) Error() string { return e.Message }
+
+// yamlErrorLinePattern extracts the 1-based line number yaml.v3 embeds in its
+// own error text: "yaml: line N: ..." for a scanner/parser syntax error, or
+// "yaml: unmarshal errors:\n  line N: ..." for a *yaml.TypeError. yaml.v3
+// exposes no structured Line/Column fields on either error type -- only
+// *yaml.Node values from an already-successful parse carry Line/Column --
+// so parsing its own error text is the only way to recover a location here.
+// Column is never recoverable at all for this class of failure (the library
+// itself does not track it for errors) and is always reported as 1;
+// validateWarmupYAMLContent's own business-rule checks (invalid time
+// expressions) look up the real Column directly from the *yaml.Node tree
+// instead, since that tree does carry it once decode has already succeeded.
+var yamlErrorLinePattern = regexp.MustCompile(`line (\d+)`)
+
+func yamlErrorLine(err error) int {
+	m := yamlErrorLinePattern.FindStringSubmatch(err.Error())
+	if len(m) != 2 {
+		return 1
+	}
+	n, convErr := strconv.Atoi(m[1])
+	if convErr != nil || n <= 0 {
+		return 1
+	}
+	return n
+}
+
+// validateWarmupYAMLContent is the /config-yaml/save route's validation pass
+// (see handleConfigYAMLSaveRequest): a full yaml.v3 parse, a strongly-typed
+// decode into warmupFileData (which alone already rejects the wrong shape
+// for defaults/accounts and the wrong type for any field -- including model,
+// since every field on warmupFileDefaults/warmupFileAccount already has a
+// concrete Go type), plus one business-rule check the type system cannot
+// express: every time expression (defaults' and every account's own) must
+// actually parse as an "HH:MM"/comma-list/cron expression, not just be *a*
+// string.
+func validateWarmupYAMLContent(content []byte) (warmupFileData, *configYAMLValidationError) {
+	var root yaml.Node
+	if err := yaml.Unmarshal(content, &root); err != nil {
+		return warmupFileData{}, &configYAMLValidationError{Message: err.Error(), Line: yamlErrorLine(err), Column: 1}
+	}
+	if len(root.Content) == 0 {
+		return warmupFileData{}, &configYAMLValidationError{Message: "内容为空文档", Line: 1, Column: 1}
+	}
+	top := root.Content[0]
+	var data warmupFileData
+	if err := top.Decode(&data); err != nil {
+		return warmupFileData{}, &configYAMLValidationError{Message: err.Error(), Line: yamlErrorLine(err), Column: 1}
+	}
+	if data.Accounts == nil {
+		data.Accounts = map[string]warmupFileAccount{}
+	}
+
+	if _, invalid := parseTimeExprs([]string(data.Defaults.Time)); len(invalid) > 0 {
+		line, col := 1, 1
+		if _, dv := findMapEntry(top, "defaults"); dv != nil {
+			if _, tv := findMapEntry(dv, "time"); tv != nil {
+				line, col = tv.Line, tv.Column
+			}
+		}
+		return warmupFileData{}, &configYAMLValidationError{
+			Message: "defaults.time 表达式解析失败：" + strings.Join(invalid, ", "),
+			Line:    line, Column: col,
+		}
+	}
+
+	_, accountsNode := findMapEntry(top, "accounts")
+	names := make([]string, 0, len(data.Accounts))
+	for name := range data.Accounts {
+		names = append(names, name)
+	}
+	sort.Strings(names) // deterministic: report the same first offender every time, regardless of Go's map iteration order.
+	for _, name := range names {
+		acct := data.Accounts[name]
+		if len(acct.Time) == 0 {
+			continue
+		}
+		if _, invalid := parseTimeExprs([]string(acct.Time)); len(invalid) > 0 {
+			line, col := 1, 1
+			if accountsNode != nil {
+				if _, av := findMapEntry(accountsNode, name); av != nil {
+					if _, tv := findMapEntry(av, "time"); tv != nil {
+						line, col = tv.Line, tv.Column
+					}
+				}
+			}
+			return warmupFileData{}, &configYAMLValidationError{
+				Message: fmt.Sprintf("accounts.%s.time 表达式解析失败：%s", name, strings.Join(invalid, ", ")),
+				Line:    line, Column: col,
+			}
+		}
+	}
+	return data, nil
 }
 
 // buildFreshWarmupDoc builds a brand-new document from scratch: one

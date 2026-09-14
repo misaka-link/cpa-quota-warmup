@@ -168,7 +168,9 @@ def main() -> None:
         )
         resources = mgmt_routes["Resources"]
         paths = [item["Path"] for item in resources]
-        if paths != ["/panel", "/status", "/run", "/set"]:
+        # v0.5.0 appended the "编辑配置文件" (edit config file) online editor's
+        # two routes at the end.
+        if paths != ["/panel", "/status", "/run", "/set", "/config-yaml", "/config-yaml/save"]:
             raise AssertionError(f"unexpected resource paths: {paths}")
         if not resources[0]["Menu"] or any(r.get("Menu") for r in resources[1:]):
             raise AssertionError("only the panel route may carry a menu label")
@@ -311,6 +313,122 @@ def main() -> None:
         set_payload = json.loads(set_body)
         if set_payload.get("lang") != "zh-TW":
             raise AssertionError(f"expected ?lang=zh-TW to be honored on /set, got {set_payload}")
+
+        # --- v0.5.0: GET .../config-yaml and GET .../config-yaml/save -----
+        # host.auth.list has no real host behind it in this sandboxed test
+        # (see /run's and /set's own 500s above), so quota-warmup.yaml is
+        # written directly here rather than relying on ensureFresh to
+        # generate it -- this exercises the actual read/save/validate
+        # contract end to end, independent of that unrelated limitation.
+        initial_yaml = (
+            "defaults:\n"
+            "  time: \"05:30\"\n"
+            "  model: auto\n"
+            "accounts:\n"
+            "  demo.json:  # 注释：中文测试\n"
+            "    enabled: false\n"
+            "    time: \"05:30\"\n"
+            "    model: auto\n"
+        )
+        pathlib.Path(warmup_file).write_text(initial_yaml, encoding="utf-8")
+
+        # 1. Read: exact content, a path, and a non-empty mtime round-trip.
+        cfg_status, _, cfg_body = decode_management(
+            invoke(
+                plugin,
+                "management.handle",
+                management_request(f"/v0/resource/plugins/{plugin_id}/config-yaml"),
+            )
+        )
+        if cfg_status != 200:
+            raise AssertionError(f"config-yaml read: status={cfg_status}, body={cfg_body!r}")
+        cfg_payload = json.loads(cfg_body)
+        if cfg_payload.get("content") != initial_yaml:
+            raise AssertionError(f"config-yaml read did not return the file's exact content: {cfg_payload}")
+        if not cfg_payload.get("mtime"):
+            raise AssertionError(f"config-yaml read did not return an mtime: {cfg_payload}")
+        if cfg_payload.get("path") != warmup_file:
+            raise AssertionError(f"config-yaml read returned unexpected path: {cfg_payload}")
+        mtime = cfg_payload["mtime"]
+
+        # 2. Save: a valid edit containing Chinese comments, quotes, a
+        # backslash and a literal "#" (inside a quoted scalar) -- exercises
+        # the base64url round trip end to end -- with the mtime just read.
+        # Expect 200, a fresh mtime, and the file on disk to match exactly.
+        edited_yaml = (
+            "defaults:\n"
+            "  time: \"05:30\"\n"
+            "  model: auto\n"
+            "accounts:\n"
+            "  demo.json:  # 注释：中文/引号\"/反斜杠\\/# 号\n"
+            "    enabled: true\n"
+            "    time: \"05:30, 10:30\"\n"
+            "    model: auto\n"
+        )
+        encoded_content = base64.urlsafe_b64encode(edited_yaml.encode("utf-8")).rstrip(b"=").decode("ascii")
+        save_status, _, save_body = decode_management(
+            invoke(
+                plugin,
+                "management.handle",
+                management_request(
+                    f"/v0/resource/plugins/{plugin_id}/config-yaml/save",
+                    {"content": encoded_content, "mtime": mtime},
+                ),
+            )
+        )
+        if save_status != 200:
+            raise AssertionError(f"config-yaml save: status={save_status}, body={save_body!r}")
+        save_payload = json.loads(save_body)
+        new_mtime = save_payload.get("mtime")
+        if not new_mtime:
+            raise AssertionError(f"config-yaml save did not return a new mtime: {save_payload}")
+        on_disk = pathlib.Path(warmup_file).read_text(encoding="utf-8")
+        if on_disk != edited_yaml:
+            raise AssertionError(f"config-yaml save did not write the exact decoded content to disk: {on_disk!r}")
+
+        # 3. Validation failure: syntactically valid YAML, but an unparsable
+        # time expression -- must be rejected (400, {error, line, column})
+        # and must NOT touch the file on disk.
+        bad_yaml = (
+            "defaults:\n"
+            "  time: \"not-a-time\"\n"
+            "  model: auto\n"
+            "accounts: {}\n"
+        )
+        encoded_bad = base64.urlsafe_b64encode(bad_yaml.encode("utf-8")).rstrip(b"=").decode("ascii")
+        bad_status, _, bad_body = decode_management(
+            invoke(
+                plugin,
+                "management.handle",
+                management_request(
+                    f"/v0/resource/plugins/{plugin_id}/config-yaml/save",
+                    {"content": encoded_bad, "mtime": new_mtime},
+                ),
+            )
+        )
+        if bad_status != 400:
+            raise AssertionError(f"config-yaml save (invalid time expr): status={bad_status}, body={bad_body!r}")
+        bad_payload = json.loads(bad_body)
+        if not bad_payload.get("error") or "line" not in bad_payload or "column" not in bad_payload:
+            raise AssertionError(f"config-yaml save (invalid time expr) missing error/line/column: {bad_payload}")
+        still_on_disk = pathlib.Path(warmup_file).read_text(encoding="utf-8")
+        if still_on_disk != edited_yaml:
+            raise AssertionError("config-yaml save must not write to disk when validation fails")
+
+        # Bonus: a stale mtime (the *original* one, now superseded by the
+        # save above) on otherwise-valid content is rejected as a conflict.
+        stale_status, _, stale_body = decode_management(
+            invoke(
+                plugin,
+                "management.handle",
+                management_request(
+                    f"/v0/resource/plugins/{plugin_id}/config-yaml/save",
+                    {"content": encoded_content, "mtime": mtime},
+                ),
+            )
+        )
+        if stale_status != 409:
+            raise AssertionError(f"config-yaml save (stale mtime) expected 409, got {stale_status} body={stale_body!r}")
 
         # The v0.3.0 top-level time/model/accounts shape (v3InlineMode) must
         # still register cleanly, be detected as inline (not legacy), and
