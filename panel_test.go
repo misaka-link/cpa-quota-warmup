@@ -75,6 +75,31 @@ func TestPanelTemplateHasNoActionsOrModelSourceHeader(t *testing.T) {
 	}
 }
 
+// TestPanelTemplateUsesComboBoxNotDatalist guards the v0.6.1 model-field
+// rework: a native <datalist> only pops up its browser-native suggestions
+// when the field's *current* value is a prefix match of one of its
+// <option>s, so it silently showed nothing once a field already held a full
+// model name or "auto" (confirmed on a live deployment with 17 real
+// <option>s present). It was replaced with a custom dropdown combobox built
+// from a single shared ".combo-menu" singleton (see panel.go's
+// modelComboMenu) plus a ".combo-toggle" (▾) button on every model input;
+// there must be no more <datalist>/list="model-options" anywhere in the
+// template.
+func TestPanelTemplateUsesComboBoxNotDatalist(t *testing.T) {
+	if !strings.Contains(panelHTMLTemplate, `class="combo-menu"`) {
+		t.Errorf("expected panelHTMLTemplate to contain the singleton .combo-menu element, found none")
+	}
+	if !strings.Contains(panelHTMLTemplate, "combo-toggle") {
+		t.Errorf("expected panelHTMLTemplate to contain .combo-toggle, found none")
+	}
+	if strings.Contains(panelHTMLTemplate, "<datalist") {
+		t.Errorf("expected panelHTMLTemplate to no longer contain a <datalist> element, but it does")
+	}
+	if strings.Contains(panelHTMLTemplate, `list="model-options"`) {
+		t.Errorf("expected panelHTMLTemplate to no longer reference the old list=\"model-options\" datalist, but it does")
+	}
+}
+
 // enclosingTag returns the nearest "<...>" opening tag that starts before
 // pos in s (an ordinary text position, not inside a tag), i.e. the tag whose
 // content includes the text at pos. Returns "" if none is found nearby.

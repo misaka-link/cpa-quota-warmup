@@ -260,6 +260,24 @@ const panelHTMLTemplate = `<!doctype html>
   .model-edit { display: inline-flex; gap: 8px; align-items: center; flex-wrap: nowrap; }
   input.model-input { width: 14em; min-width: 0; }
   input.row-time { width: 12em; min-width: 0; }
+  .combo { position: relative; display: inline-flex; align-items: stretch; }
+  .combo .model-input { border-top-right-radius: 0; border-bottom-right-radius: 0; border-right: 0; }
+  .combo-toggle {
+    appearance: none; border: 1px solid var(--border-primary); background: var(--bg-secondary); color: var(--text-secondary);
+    width: 24px; height: 32px; border-radius: 0 6px 6px 0; cursor: pointer; font-size: 10px;
+    display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box;
+  }
+  .combo-toggle:hover { background: var(--bg-hover); }
+  .combo-toggle:focus-visible { outline: 2px solid var(--primary-color); outline-offset: 2px; }
+  .combo-menu {
+    position: absolute; z-index: 1000; min-width: 220px; max-height: 280px; overflow: auto;
+    background: var(--bg-secondary); border: 1px solid var(--border-primary); border-radius: 6px;
+    box-shadow: var(--shadow-lg, 0 10px 18px -3px #0000001a); padding: 4px 0; font-size: 13px;
+  }
+  .combo-group { padding: 4px 12px; font-size: 11px; letter-spacing: .04em; text-transform: uppercase; color: var(--text-tertiary); }
+  .combo-option { padding: 6px 12px; cursor: pointer; color: var(--text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .combo-option:hover, .combo-option-active { background: var(--bg-hover); }
+  .combo-option-current { font-weight: 700; }
   .text-btn {
     appearance: none; border: 0; background: none; padding: 0; margin: 0;
     color: var(--primary-color); font: inherit; font-size: 12px; text-decoration: underline;
@@ -366,7 +384,6 @@ const panelHTMLTemplate = `<!doctype html>
       </tr></thead>
       <tbody><tr><td colspan="7" class="empty" data-i18n="ui_loading">{{ui_loading}}</td></tr></tbody>
     </table></div>
-    <datalist id="model-options"></datalist>
     <div id="runResult" hidden>
       <h3 data-i18n="ui_run_result_title">{{ui_run_result_title}}</h3>
       <div id="runResultBody"></div>
@@ -400,6 +417,7 @@ const panelHTMLTemplate = `<!doctype html>
 
   <footer class="meta" data-i18n="ui_footer_note">{{ui_footer_note}}</footer>
 </div>
+<div id="modelComboMenu" class="combo-menu" role="listbox" hidden></div>
 <script id="i18n-data" type="application/json">{{I18N_JSON}}</script>
 <script>
 (function () {
@@ -475,23 +493,29 @@ const panelHTMLTemplate = `<!doctype html>
     return provider ? ('<span class="count-badge">' + esc(provider) + '</span>') : "";
   }
 
-  // modelCellHTML builds the "<input list=model-options> + 自动" control
-  // used both for the config section's global-model editor (scope="global")
-  // and each inline-mode account row's model cell (scope="auth"). There is
-  // no explicit Save button any more (see v0.6.0's auto-save-on-change
-  // rework below): the input commits itself on change (blur) or Enter, and
-  // "自动" is a small inline text button rather than a full-size one.
+  // modelCellHTML builds the "<input> + ▾ + 自动" control used both for the
+  // config section's global-model editor (scope="global") and each
+  // inline-mode account row's model cell (scope="auth"). There is no
+  // explicit Save button any more (see v0.6.0's auto-save-on-change rework
+  // below): the input commits itself on change (blur) or Enter, and "自动"
+  // is a small inline text button rather than a full-size one.
   // currentValue "auto" (or empty) leaves the input blank -- the
   // placeholder communicates that auto-selection is in effect -- so a
   // beginner can never accidentally type the literal word "auto" into a
-  // real model name field.
+  // real model name field. The ".combo"/".combo-toggle" wrapper drives the
+  // custom dropdown (see modelComboMenu below) -- v0.6.1 replaced the
+  // earlier native datalist-based suggestion list, which only popped up
+  // when the current value was a *prefix* match of an option, so it
+  // silently showed nothing once a field already held a full model name or
+  // "auto".
   function modelCellHTML(scope, authName, currentValue, modelSource) {
     var attrs = 'data-scope="' + esc(scope) + '" data-auth="' + esc(authName || "") + '"';
     var value = (!currentValue || currentValue === "auto") ? "" : currentValue;
     var title = modelSource ? ' title="' + esc(modelSource) + '"' : "";
     return '<span class="model-edit">' +
-      '<input type="text" list="model-options" class="model-input" ' + attrs +
-      ' value="' + esc(value) + '" placeholder="' + esc(t("ui_model_placeholder")) + '"' + title + '>' +
+      '<span class="combo"><input type="text" class="model-input" ' + attrs +
+      ' value="' + esc(value) + '" placeholder="' + esc(t("ui_model_placeholder")) + '"' + title + ' autocomplete="off">' +
+      '<button type="button" class="combo-toggle" aria-label="' + esc(t("ui_expand")) + '">▾</button></span>' +
       '<button type="button" class="text-btn model-auto-btn" ' + attrs + '>' + esc(t("ui_model_auto")) + '</button>' +
       '</span>';
   }
@@ -505,33 +529,220 @@ const panelHTMLTemplate = `<!doctype html>
     var value = (!currentValue || currentValue === "auto") ? "" : currentValue;
     var title = modelSource ? ' title="' + esc(modelSource) + '"' : "";
     return '<span class="model-edit">' +
-      '<input type="text" list="model-options" class="model-input row-model" value="' + esc(value) +
-      '" placeholder="' + esc(t("ui_model_placeholder")) + '"' + title + '>' +
+      '<span class="combo"><input type="text" class="model-input row-model" value="' + esc(value) +
+      '" placeholder="' + esc(t("ui_model_placeholder")) + '"' + title + ' autocomplete="off">' +
+      '<button type="button" class="combo-toggle" aria-label="' + esc(t("ui_expand")) + '">▾</button></span>' +
       '<button type="button" class="text-btn row-model-auto">' + esc(t("ui_model_auto")) + '</button>' +
       '</span>';
   }
 
-  // populateModelOptions fills the shared <datalist> from status'
-  // available_models, grouped by owned_by so the dropdown at least hints at
-  // which provider each id belongs to. A model not in this list can still
-  // be typed freely -- the datalist is a convenience, not a whitelist; the
-  // server itself validates against the live list when a model field is
-  // committed.
-  function populateModelOptions(models) {
-    var list = models || [];
+  // comboModels is the shared available_models list every model-input's
+  // custom dropdown (see modelComboMenu below) reads from -- the accounts
+  // table's per-row inputs and the config section's global-model input all
+  // share this one array, refreshed on every load() (see setComboModels).
+  var comboModels = [];
+  function setComboModels(models) { comboModels = models || []; }
+
+  // --- model combobox -------------------------------------------------
+  //
+  // v0.6.1 replaced the native datalist-based suggestion list every
+  // model-input used to carry with this custom dropdown: a browser-native
+  // datalist popup only appears when the field's *current* value is a
+  // prefix match of one of its options, so once a field already held a
+  // full model name (or the empty/"auto" placeholder state), clicking it
+  // showed nothing at all -- confirmed on a live deployment with 17 real
+  // options present. This dropdown always shows the full list on open,
+  // filters by substring as the user types, and is a single DOM node
+  // (modelComboMenu, defined once in the static HTML, absolutely
+  // positioned over whichever input opened it) shared by every model-input
+  // on the page rather than one suggestion list per row -- both because
+  // the underlying model list is identical everywhere (comboModels) and so
+  // it survives every table re-render untouched (renderAccounts only
+  // replaces #accountsTable's <tbody>, never anything at body level).
+  var comboMenuEl = document.getElementById("modelComboMenu");
+  var comboActiveInput = null; // the <input> the open menu belongs to, or null when closed
+  var comboCurrentValue = "auto"; // that input's value *at the moment the menu opened* (for the "current" highlight; deliberately not re-read on every keystroke, or the highlight would chase the in-progress filter text instead of marking the account's actual saved model)
+  var comboItems = []; // flat list of {el, value} for the currently-rendered options, in visual/keyboard-nav order (group headings are not included -- they are not selectable)
+  var comboActiveIndex = -1; // index into comboItems the keyboard cursor is on, -1 = none
+
+  function comboAutoLabel() {
+    return "auto (" + t("ui_model_auto_full") + ")";
+  }
+
+  // renderComboMenu (re)builds the menu's contents for the given filter
+  // query (substring match, case-insensitive, against both the model id and
+  // its owned_by group) and rebuilds comboItems/resets the keyboard cursor.
+  // The pinned "auto (...)" entry is never filtered out ("固定" in the
+  // spec) -- it is always a valid choice regardless of what has been typed.
+  function renderComboMenu(query) {
+    var q = (query || "").trim().toLowerCase();
+    comboItems = [];
+    var frag = document.createDocumentFragment();
+
+    var autoOpt = document.createElement("div");
+    autoOpt.className = "combo-option";
+    autoOpt.setAttribute("role", "option");
+    autoOpt.setAttribute("data-value", "auto");
+    autoOpt.textContent = comboAutoLabel();
+    if (comboCurrentValue === "auto") { autoOpt.classList.add("combo-option-current"); }
+    comboItems.push({ el: autoOpt, value: "auto" });
+    frag.appendChild(autoOpt);
+
     var groups = {}, order = [];
-    list.forEach(function (m) {
+    comboModels.forEach(function (m) {
       var g = m.owned_by || "";
+      var hay = (m.id + " " + g).toLowerCase();
+      if (q && hay.indexOf(q) === -1) { return; }
       if (!groups[g]) { groups[g] = []; order.push(g); }
       groups[g].push(m.id);
     });
-    var html = order.map(function (g) {
-      var options = groups[g].map(function (id) { return '<option value="' + esc(id) + '">'; }).join("");
-      return g ? ('<optgroup label="' + esc(g) + '">' + options + '</optgroup>') : options;
-    }).join("");
-    var el = document.getElementById("model-options");
-    if (el) { el.innerHTML = html; }
+    order.forEach(function (g) {
+      if (g) {
+        var head = document.createElement("div");
+        head.className = "combo-group";
+        head.textContent = g;
+        frag.appendChild(head);
+      }
+      groups[g].forEach(function (id) {
+        var opt = document.createElement("div");
+        opt.className = "combo-option";
+        opt.setAttribute("role", "option");
+        opt.setAttribute("data-value", id);
+        opt.textContent = id;
+        if (id === comboCurrentValue) { opt.classList.add("combo-option-current"); }
+        comboItems.push({ el: opt, value: id });
+        frag.appendChild(opt);
+      });
+    });
+
+    comboMenuEl.innerHTML = "";
+    comboMenuEl.appendChild(frag);
+    comboActiveIndex = -1;
   }
+
+  // positionComboMenu places the (already-visible, already-rendered) menu
+  // directly under input, flipping above it instead when there is not
+  // enough room below the viewport -- the spec's "若超出视口底部则向上弹".
+  function positionComboMenu(input) {
+    var rect = input.closest(".combo").getBoundingClientRect();
+    var menuHeight = Math.min(comboMenuEl.scrollHeight, 280);
+    var spaceBelow = window.innerHeight - rect.bottom;
+    var top;
+    if (spaceBelow < menuHeight + 8 && rect.top > menuHeight + 8) {
+      top = rect.top + window.scrollY - menuHeight - 4;
+    } else {
+      top = rect.bottom + window.scrollY + 4;
+    }
+    comboMenuEl.style.top = top + "px";
+    comboMenuEl.style.left = (rect.left + window.scrollX) + "px";
+    comboMenuEl.style.minWidth = Math.max(rect.width, 220) + "px";
+  }
+
+  // openCombo always shows the *full* (unfiltered) list, regardless of the
+  // input's current value -- per the spec, clicking the toggle or focusing/
+  // clicking the input always expands the complete list; only subsequently
+  // typing narrows it (see the "input" listener below).
+  function openCombo(input) {
+    comboActiveInput = input;
+    comboCurrentValue = (input.value || "").trim() || "auto";
+    comboMenuEl.hidden = false;
+    renderComboMenu("");
+    positionComboMenu(input);
+  }
+
+  function closeCombo() {
+    comboMenuEl.hidden = true;
+    comboMenuEl.innerHTML = "";
+    comboActiveInput = null;
+    comboItems = [];
+    comboActiveIndex = -1;
+  }
+
+  function comboMoveActive(delta) {
+    if (!comboItems.length) { return; }
+    if (comboActiveIndex >= 0 && comboItems[comboActiveIndex]) {
+      comboItems[comboActiveIndex].el.classList.remove("combo-option-active");
+    }
+    comboActiveIndex = (comboActiveIndex + delta + comboItems.length) % comboItems.length;
+    var active = comboItems[comboActiveIndex].el;
+    active.classList.add("combo-option-active");
+    if (active.scrollIntoView) { active.scrollIntoView({ block: "nearest" }); }
+  }
+
+  // comboSelect commits value into whichever input the open menu belongs
+  // to. A real model id just becomes the input's new value, dispatching a
+  // "change" event so the existing auto-save delegation (see "change"
+  // listener below) picks it up exactly as if the operator had typed it and
+  // blurred. "auto" is special-cased to instead simulate a click on this
+  // same field's own "自动"/Auto text button: the generic change handler
+  // deliberately treats an *empty* value as "nothing to do" (so blurring an
+  // untouched, already-blank field never spams a save), and only the
+  // dedicated auto button/click path is defined to mean "clear to auto".
+  function comboSelect(value) {
+    if (!comboActiveInput) { return; }
+    var input = comboActiveInput;
+    closeCombo();
+    if (value === "auto") {
+      var wrapper = input.closest(".model-edit");
+      var autoBtn = wrapper ? wrapper.querySelector(".row-model-auto, .model-auto-btn") : null;
+      if (autoBtn) { autoBtn.click(); }
+      return;
+    }
+    input.value = value;
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+  }
+
+  // Any click is checked against (in order): a combo option (select it), the
+  // ▾ toggle (open its own input's combo), the model-input itself (open),
+  // or -- if a combo is currently open and the click landed on neither the
+  // menu nor any .combo -- treated as an outside click that closes it.
+  document.addEventListener("click", function (event) {
+    var target = event.target;
+
+    var optionEl = target.closest ? target.closest(".combo-option") : null;
+    if (optionEl && comboMenuEl.contains(optionEl)) {
+      comboSelect(optionEl.getAttribute("data-value"));
+      return;
+    }
+
+    var toggleBtn = target.closest ? target.closest(".combo-toggle") : null;
+    if (toggleBtn) {
+      var comboWrap = toggleBtn.closest(".combo");
+      var input = comboWrap ? comboWrap.querySelector(".model-input") : null;
+      if (input) { input.focus(); openCombo(input); }
+      return;
+    }
+
+    if (target.classList && target.classList.contains("model-input")) {
+      openCombo(target);
+      return;
+    }
+
+    if (comboActiveInput && !comboMenuEl.contains(target) && !(target.closest && target.closest(".combo"))) {
+      closeCombo();
+    }
+  });
+
+  // Re-focusing a model-input (tabbing in, or clicking one that was not
+  // already focused -- "focusin" is used instead of "focus" because plain
+  // "focus" does not bubble, and this page listens at the document level so
+  // it keeps working after every table re-render) also always opens the
+  // full list, same as the click handler above.
+  document.addEventListener("focusin", function (event) {
+    var target = event.target;
+    if (target.classList && target.classList.contains("model-input")) {
+      openCombo(target);
+    }
+  });
+
+  // Typing narrows the open menu to a case-insensitive substring match.
+  document.addEventListener("input", function (event) {
+    var target = event.target;
+    if (target.classList && target.classList.contains("model-input") && comboActiveInput === target) {
+      renderComboMenu(target.value);
+      positionComboMenu(target);
+    }
+  });
 
   // chip renders one compact rounded pill in the config summary's chip row.
   function chip(label, value, title) {
@@ -777,10 +988,32 @@ const panelHTMLTemplate = `<!doctype html>
   });
 
   document.addEventListener("keydown", function (event) {
-    if (event.key !== "Enter") { return; }
     var target = event.target;
+    var isModelInput = target.classList && target.classList.contains("model-input");
+
+    // While this input's own combo menu is open, arrow keys move the
+    // highlighted option, Enter commits whichever option is highlighted
+    // (falling back to the plain blur-triggers-autosave behavior below if
+    // none is), and Escape just closes the menu without changing anything.
+    if (isModelInput && comboActiveInput === target) {
+      if (event.key === "ArrowDown") { event.preventDefault(); comboMoveActive(1); return; }
+      if (event.key === "ArrowUp") { event.preventDefault(); comboMoveActive(-1); return; }
+      if (event.key === "Escape") { event.preventDefault(); closeCombo(); return; }
+      if (event.key === "Enter") {
+        event.preventDefault();
+        if (comboActiveIndex >= 0 && comboItems[comboActiveIndex]) {
+          comboSelect(comboItems[comboActiveIndex].value);
+        } else {
+          closeCombo();
+          target.blur();
+        }
+        return;
+      }
+    }
+
+    if (event.key !== "Enter") { return; }
     if (target.classList.contains("row-time") || target.classList.contains("row-model") ||
-        (target.classList.contains("model-input") && target.hasAttribute("data-scope"))) {
+        (isModelInput && target.hasAttribute("data-scope"))) {
       event.preventDefault();
       target.blur();
     }
@@ -829,11 +1062,17 @@ const panelHTMLTemplate = `<!doctype html>
 
   function load() {
     showError("");
+    // Any open combo menu is bound to an <input> that renderConfigChips/
+    // renderAccounts below are about to replace (config section) or fully
+    // re-render (accounts table); closing it first avoids leaving the menu
+    // visibly open over a now-detached input, or a keyboard/click handler
+    // reacting against a stale comboActiveInput reference.
+    closeCombo();
     fetch(base + "status?lang=" + encodeURIComponent(lang), { cache: "no-store" })
       .then(function (resp) { return resp.json().then(function (body) { return { ok: resp.ok, body: body }; }); })
       .then(function (res) {
         if (!res.ok) { showError(t("ui_load_failed")); return; }
-        populateModelOptions(res.body.available_models);
+        setComboModels(res.body.available_models);
         renderConfigChips(res.body.config, res.body.last_tick, res.body.last_tick_error);
         renderConfigAdvanced(res.body.config);
         var isFileMode = res.body.config && res.body.config.mode === "file";

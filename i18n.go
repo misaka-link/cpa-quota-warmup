@@ -174,6 +174,16 @@ const (
 	// saving/saved/failed indicator's text, see panel.go's flashRow).
 	msgUIStatusEnabled    msgKey = "ui_status_enabled"
 	msgUIAdvancedSettings msgKey = "ui_advanced_settings"
+
+	// v0.6.1 additions: the model field's custom dropdown combobox (native
+	// <datalist> only pops up its suggestions when the current input value
+	// is a *prefix* match, so it silently showed nothing once a field
+	// already held a full model name or "auto" -- see modelComboMenu's own
+	// doc comment in panel.go). ui_expand labels the ▾ toggle button
+	// (aria-label, not visible text); ui_model_auto_full is the combo
+	// menu's pinned-first "auto (...)" entry's descriptive suffix.
+	msgUIExpand        msgKey = "ui_expand"
+	msgUIModelAutoFull msgKey = "ui_model_auto_full"
 )
 
 // messagesEN is the source-of-truth key set: every other language map is
@@ -295,6 +305,8 @@ var messagesEN = map[msgKey]string{
 	msgUIConfigYAMLEncodeError: "内容编码失败，请检查浏览器兼容性",
 	msgUIStatusEnabled:         "Enabled",
 	msgUIAdvancedSettings:      "Advanced settings",
+	msgUIExpand:                "Expand",
+	msgUIModelAutoFull:         "Auto-select",
 }
 
 var messagesZhCN = map[msgKey]string{
@@ -414,6 +426,8 @@ var messagesZhCN = map[msgKey]string{
 	msgUIConfigYAMLEncodeError: "内容编码失败，请检查浏览器兼容性",
 	msgUIStatusEnabled:         "已启用",
 	msgUIAdvancedSettings:      "高级设置",
+	msgUIExpand:                "展开",
+	msgUIModelAutoFull:         "自动选择",
 }
 
 var messagesZhTW = map[msgKey]string{
@@ -533,6 +547,8 @@ var messagesZhTW = map[msgKey]string{
 	msgUIConfigYAMLEncodeError: "内容编码失败，请检查浏览器兼容性",
 	msgUIStatusEnabled:         "已啟用",
 	msgUIAdvancedSettings:      "進階設定",
+	msgUIExpand:                "展開",
+	msgUIModelAutoFull:         "自動選擇",
 }
 
 // messagesRU. Written as natural technical Russian, not a machine-translated
@@ -659,6 +675,8 @@ var messagesRU = map[msgKey]string{
 	msgUIConfigYAMLEncodeError: "内容编码失败，请检查浏览器兼容性",
 	msgUIStatusEnabled:         "Включено",
 	msgUIAdvancedSettings:      "Дополнительные настройки",
+	msgUIExpand:                "Развернуть",
+	msgUIModelAutoFull:         "Автовыбор",
 }
 
 var messagesByLang = map[lang]map[msgKey]string{

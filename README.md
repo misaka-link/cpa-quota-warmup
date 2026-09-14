@@ -240,7 +240,7 @@ plugins:
 
 ```bash
 cd ~/cpa-plugins/cpa-quota-warmup
-scripts/build.sh                 # -> dist/cpa-quota-warmup-v0.6.0.so (+ .sha256)
+scripts/build.sh                 # -> dist/cpa-quota-warmup-v0.6.1.so (+ .sha256)
 sudo ops/merge-config.py         # 原地合并默认配置到 /var/lib/cli-proxy-api/config.yaml（保 inode）
                                   # sudo ops/merge-config.py --remove 可移除
 sudo ops/deploy                  # 安装 .so 到插件目录并重启 cli-proxy-api.service
@@ -257,7 +257,7 @@ sudo ops/deploy                  # 安装 .so 到插件目录并重启 cli-proxy
 go vet ./... && go test ./...
 
 # 2. 真 ABI 集成测试（不需要真实宿主/网络）
-python3 integration_abi_test.py dist/cpa-quota-warmup-v0.6.0.so
+python3 integration_abi_test.py dist/cpa-quota-warmup-v0.6.1.so
 
 # 3. 部署后看宿主日志（host.log 回调，前缀 [cpa-quota-warmup]）
 journalctl -u cli-proxy-api | rg 'cpa-quota-warmup'
@@ -404,3 +404,7 @@ curl -s "http://127.0.0.1:8317/v0/resource/plugins/cpa-quota-warmup/config-yaml/
 ## v0.6.0
 
 - 面板排版重做：沿用 CPA 管理控制台的主题变量（暖灰亮/暗两套），配置区改为摘要 chips + 折叠高级设置，账号表改为勾选/输入即自动保存（去掉保存按钮），时间格式化为 MM-DD HH:MM，最近记录用 ✓/✗，编辑器样式对齐控制台。
+
+## v0.6.1
+
+- 模型选择改为自定义下拉：点开即列出全部可用模型（按 provider 分组、输入即过滤、键盘可选），替换只在前缀匹配时才弹出的原生 datalist。
