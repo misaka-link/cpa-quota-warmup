@@ -166,14 +166,24 @@ def main() -> None:
                 "ResourceBasePath": f"/v0/resource/plugins/{plugin_id}",
             },
         )
-        resources = mgmt_routes["Resources"]
+        resources = mgmt_routes.get("Resources", [])
         paths = [item["Path"] for item in resources]
-        # v0.5.0 appended the "编辑配置文件" (edit config file) online editor's
-        # two routes at the end.
-        if paths != ["/panel", "/status", "/run", "/set", "/config-yaml", "/config-yaml/save"]:
+        if paths != ["/panel"]:
             raise AssertionError(f"unexpected resource paths: {paths}")
-        if not resources[0]["Menu"] or any(r.get("Menu") for r in resources[1:]):
+        if not resources[0].get("Menu"):
             raise AssertionError("only the panel route may carry a menu label")
+
+        routes = mgmt_routes.get("Routes", [])
+        route_paths = sorted(set(item["Path"] for item in routes))
+        expected_route_paths = sorted([
+            f"/plugins/{plugin_id}/status",
+            f"/plugins/{plugin_id}/run",
+            f"/plugins/{plugin_id}/set",
+            f"/plugins/{plugin_id}/config-yaml",
+            f"/plugins/{plugin_id}/config-yaml/save",
+        ])
+        if route_paths != expected_route_paths:
+            raise AssertionError(f"unexpected management route paths: {route_paths}, want {expected_route_paths}")
 
         # The panel page must render as a self-contained HTML document that
         # follows the Management Center's own language (and theme) choice.
@@ -216,7 +226,7 @@ def main() -> None:
             invoke(
                 plugin,
                 "management.handle",
-                management_request(f"/v0/resource/plugins/{plugin_id}/status", {"lang": "ru"}),
+                management_request(f"/v0/management/plugins/{plugin_id}/status", {"lang": "ru"}),
             )
         )
         if status != 200 or "application/json" not in headers.get("content-type", ""):
@@ -255,7 +265,7 @@ def main() -> None:
             invoke(
                 plugin,
                 "management.handle",
-                management_request(f"/v0/resource/plugins/{plugin_id}/run", {"auth": "*", "lang": "zh-TW"}),
+                management_request(f"/v0/management/plugins/{plugin_id}/run", {"auth": "*", "lang": "zh-TW"}),
             )
         )
         if run_status != 500 or b"error" not in run_body:
@@ -275,7 +285,7 @@ def main() -> None:
             invoke(
                 plugin,
                 "management.handle",
-                management_request(f"/v0/resource/plugins/{plugin_id}/status"),
+                management_request(f"/v0/management/plugins/{plugin_id}/status"),
             )
         )
         payload = json.loads(body)
@@ -288,7 +298,7 @@ def main() -> None:
             invoke(
                 plugin,
                 "management.handle",
-                management_request(f"/v0/resource/plugins/{plugin_id}/set", {"model": "x"}),
+                management_request(f"/v0/management/plugins/{plugin_id}/set", {"model": "x"}),
             )
         )
         if set_status != 400:
@@ -303,7 +313,7 @@ def main() -> None:
                 plugin,
                 "management.handle",
                 management_request(
-                    f"/v0/resource/plugins/{plugin_id}/set",
+                    f"/v0/management/plugins/{plugin_id}/set",
                     {"auth": "antigravity-alice.json", "enabled": "true", "lang": "zh-TW"},
                 ),
             )
@@ -337,7 +347,7 @@ def main() -> None:
             invoke(
                 plugin,
                 "management.handle",
-                management_request(f"/v0/resource/plugins/{plugin_id}/config-yaml"),
+                management_request(f"/v0/management/plugins/{plugin_id}/config-yaml"),
             )
         )
         if cfg_status != 200:
@@ -371,7 +381,7 @@ def main() -> None:
                 plugin,
                 "management.handle",
                 management_request(
-                    f"/v0/resource/plugins/{plugin_id}/config-yaml/save",
+                    f"/v0/management/plugins/{plugin_id}/config-yaml/save",
                     {"content": encoded_content, "mtime": mtime},
                 ),
             )
@@ -401,7 +411,7 @@ def main() -> None:
                 plugin,
                 "management.handle",
                 management_request(
-                    f"/v0/resource/plugins/{plugin_id}/config-yaml/save",
+                    f"/v0/management/plugins/{plugin_id}/config-yaml/save",
                     {"content": encoded_bad, "mtime": new_mtime},
                 ),
             )
@@ -422,7 +432,7 @@ def main() -> None:
                 plugin,
                 "management.handle",
                 management_request(
-                    f"/v0/resource/plugins/{plugin_id}/config-yaml/save",
+                    f"/v0/management/plugins/{plugin_id}/config-yaml/save",
                     {"content": encoded_content, "mtime": mtime},
                 ),
             )
@@ -438,7 +448,7 @@ def main() -> None:
         if v3_reconfigured["metadata"]["Name"] != plugin_id:
             raise AssertionError("reconfigure (v3 inline) returned unexpected metadata")
         status, _, body = decode_management(
-            invoke(plugin, "management.handle", management_request(f"/v0/resource/plugins/{plugin_id}/status"))
+            invoke(plugin, "management.handle", management_request(f"/v0/management/plugins/{plugin_id}/status"))
         )
         payload = json.loads(body)
         if payload["config"].get("mode") != "inline" or payload["config"].get("legacy_mode"):
@@ -453,7 +463,7 @@ def main() -> None:
                 plugin,
                 "management.handle",
                 management_request(
-                    f"/v0/resource/plugins/{plugin_id}/set",
+                    f"/v0/management/plugins/{plugin_id}/set",
                     {"scope": "global", "model": "gemini-3.7-flash-high", "lang": "zh-TW"},
                 ),
             )
@@ -469,7 +479,7 @@ def main() -> None:
             invoke(
                 plugin,
                 "management.handle",
-                management_request(f"/v0/resource/plugins/{plugin_id}/set", {"scope": "global", "model": "auto"}),
+                management_request(f"/v0/management/plugins/{plugin_id}/set", {"scope": "global", "model": "auto"}),
             )
         )
         if set_status != 200:
@@ -482,7 +492,7 @@ def main() -> None:
         if legacy_reconfigured["metadata"]["Name"] != plugin_id:
             raise AssertionError("reconfigure (legacy) returned unexpected metadata")
         status, _, body = decode_management(
-            invoke(plugin, "management.handle", management_request(f"/v0/resource/plugins/{plugin_id}/status"))
+            invoke(plugin, "management.handle", management_request(f"/v0/management/plugins/{plugin_id}/status"))
         )
         payload = json.loads(body)
         if payload["config"].get("mode") != "inline" or not payload["config"].get("legacy_mode"):
@@ -492,7 +502,7 @@ def main() -> None:
             invoke(
                 plugin,
                 "management.handle",
-                management_request(f"/v0/resource/plugins/{plugin_id}/set", {"scope": "global", "model": "x"}),
+                management_request(f"/v0/management/plugins/{plugin_id}/set", {"scope": "global", "model": "x"}),
             )
         )
         if set_status != 501:
@@ -505,7 +515,7 @@ def main() -> None:
             invoke(
                 plugin,
                 "management.handle",
-                management_request(f"/v0/resource/plugins/{plugin_id}/status"),
+                management_request(f"/v0/management/plugins/{plugin_id}/status"),
             )
         )
         if status != 503:

@@ -156,6 +156,7 @@ const (
 	msgConfigYAMLConflict       msgKey = "config_yaml_conflict"
 	msgConfigYAMLWriteFailed    msgKey = "config_yaml_write_failed"
 	msgConfigYAMLSaved          msgKey = "config_yaml_saved"
+	msgResourceRouteForbidden   msgKey = "resource_route_forbidden"
 
 	msgUISectionConfigYAML     msgKey = "ui_section_config_yaml"
 	msgUIConfigYAMLReload      msgKey = "ui_config_yaml_reload"
@@ -323,6 +324,7 @@ var messagesEN = map[msgKey]string{
 	msgConfigYAMLConflict:       "文件已被别处修改，请刷新",
 	msgConfigYAMLWriteFailed:    "写入配置文件失败：%v",
 	msgConfigYAMLSaved:          "已保存并重新加载",
+	msgResourceRouteForbidden:   "This endpoint contains sensitive operations or data and is not accessible over unauthenticated resource routes; use /v0/management/ with management authentication",
 
 	msgUISectionConfigYAML:     "编辑配置文件",
 	msgUIConfigYAMLReload:      "重新载入",
@@ -450,6 +452,7 @@ var messagesZhCN = map[msgKey]string{
 	msgConfigYAMLConflict:       "文件已被别处修改，请刷新",
 	msgConfigYAMLWriteFailed:    "写入配置文件失败：%v",
 	msgConfigYAMLSaved:          "已保存并重新加载",
+	msgResourceRouteForbidden:   "该接口包含敏感数据或变更操作，不支持免鉴权的 resource 路由，请使用 /v0/management/ 路由并在请求头提供管理密钥",
 
 	msgUISectionConfigYAML:     "编辑配置文件",
 	msgUIConfigYAMLReload:      "重新载入",
@@ -577,6 +580,7 @@ var messagesZhTW = map[msgKey]string{
 	msgConfigYAMLConflict:       "文件已被别处修改，请刷新",
 	msgConfigYAMLWriteFailed:    "写入配置文件失败：%v",
 	msgConfigYAMLSaved:          "已保存并重新加载",
+	msgResourceRouteForbidden:   "該介面包含敏感資料或變更操作，不支援免鑑權的 resource 路由，請使用 /v0/management/ 路由並在請求頭提供管理金鑰",
 
 	msgUISectionConfigYAML:     "编辑配置文件",
 	msgUIConfigYAMLReload:      "重新载入",
@@ -711,6 +715,7 @@ var messagesRU = map[msgKey]string{
 	msgConfigYAMLConflict:       "文件已被别处修改，请刷新",
 	msgConfigYAMLWriteFailed:    "写入配置文件失败：%v",
 	msgConfigYAMLSaved:          "已保存并重新加载",
+	msgResourceRouteForbidden:   "Этот эндпоинт содержит конфиденциальные данные или операции и недоступен через resource-маршруты без аутентификации; используйте /v0/management/ с авторизацией",
 
 	msgUISectionConfigYAML:     "编辑配置文件",
 	msgUIConfigYAMLReload:      "重新载入",

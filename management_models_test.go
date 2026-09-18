@@ -33,7 +33,7 @@ func TestHandleStatusRequestPerAccountModelsFilteredByProvider(t *testing.T) {
 		{Name: "b.json", Provider: "antigravity"},
 	}}
 
-	status, body := callManagement(t, "/v0/resource/plugins/cpa-quota-warmup/status", nil)
+	status, body := callManagement(t, "/v0/management/plugins/cpa-quota-warmup/status", nil)
 	if status != http.StatusOK {
 		t.Fatalf("status: %d body=%s", status, body)
 	}
@@ -96,14 +96,14 @@ func TestHandleStatusRequestModelHintWhenModelNotInProviderList(t *testing.T) {
 	e, _ := registerFileMode(t, "advanced:\n  base-url: \""+modelsSrv.URL+"\"\n  api-key: \"sk-test\"\n")
 	e.auths = fakeAuthLister{entries: []pluginapi.HostAuthFileEntry{{Name: "c.json", Provider: "codex"}}}
 
-	setStatus, setBody := callManagement(t, "/v0/resource/plugins/cpa-quota-warmup/set", url.Values{
+	setStatus, setBody := callManagement(t, "/v0/management/plugins/cpa-quota-warmup/set", url.Values{
 		"auth": {"c.json"}, "enabled": {"true"}, "model": {"grok-3-mini"},
 	})
 	if setStatus != http.StatusOK {
 		t.Fatalf("set: status=%d body=%s", setStatus, setBody)
 	}
 
-	status, body := callManagement(t, "/v0/resource/plugins/cpa-quota-warmup/status", nil)
+	status, body := callManagement(t, "/v0/management/plugins/cpa-quota-warmup/status", nil)
 	if status != http.StatusOK {
 		t.Fatalf("status: %d body=%s", status, body)
 	}

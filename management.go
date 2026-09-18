@@ -73,44 +73,68 @@ const (
 	// (one short section per auth file) while still bounding worst-case
 	// memory/parse cost from an arbitrary GET query string.
 	configYAMLMaxContentBytes = 256 * 1024
+
+	// Management API routes exposed under /v0/management/plugins/cpa-quota-warmup/
+	// with full management authentication enforced by the host.
+	managementPluginPrefix       = "/plugins/cpa-quota-warmup"
+	managementStatusPath         = managementPluginPrefix + "/status"
+	managementRunPath            = managementPluginPrefix + "/run"
+	managementSetPath            = managementPluginPrefix + "/set"
+	managementConfigYAMLPath     = managementPluginPrefix + "/config-yaml"
+	managementConfigYAMLSavePath = managementPluginPrefix + "/config-yaml/save"
 )
 
 func managementRegistration() pluginapi.ManagementRegistrationResponse {
 	return pluginapi.ManagementRegistrationResponse{
+		Routes: []pluginapi.ManagementRoute{
+			{
+				Method:      http.MethodGet,
+				Path:        managementStatusPath,
+				Description: "配额预热状态 JSON（带管理鉴权）/ Quota warmup status as JSON (authenticated).",
+			},
+			{
+				Method:      http.MethodPost,
+				Path:        managementRunPath,
+				Description: "立即触发一轮预热（POST，带管理鉴权）/ Trigger an immediate warmup round (POST, authenticated).",
+			},
+			{
+				Method:      http.MethodGet,
+				Path:        managementRunPath,
+				Description: "立即触发一轮预热（GET，带管理鉴权）/ Trigger an immediate warmup round (GET, authenticated).",
+			},
+			{
+				Method:      http.MethodPost,
+				Path:        managementSetPath,
+				Description: "保存面板编辑（POST，带管理鉴权）/ Save panel edit (POST, authenticated).",
+			},
+			{
+				Method:      http.MethodGet,
+				Path:        managementSetPath,
+				Description: "保存面板编辑（GET，带管理鉴权）/ Save panel edit (GET, authenticated).",
+			},
+			{
+				Method:      http.MethodGet,
+				Path:        managementConfigYAMLPath,
+				Description: "quota-warmup.yaml 原始内容（带管理鉴权）/ Raw contents of quota-warmup.yaml (authenticated).",
+			},
+			{
+				Method:      http.MethodPost,
+				Path:        managementConfigYAMLSavePath,
+				Description: "保存 quota-warmup.yaml 修改（POST，带管理鉴权）/ Save edit from config editor (POST, authenticated).",
+			},
+			{
+				Method:      http.MethodGet,
+				Path:        managementConfigYAMLSavePath,
+				Description: "保存 quota-warmup.yaml 修改（GET，带管理鉴权）/ Save edit from config editor (GET, authenticated).",
+			},
+		},
 		Resources: []pluginapi.ResourceRoute{
 			{
-				// The visible page: menu label lives here, not on the JSON
-				// feed below, matching every other plugin panel in this
-				// deployment (cpa-usage-panel, cpa-context-vm).
+				// The visible page: menu label lives here, matching every other
+				// plugin panel in this deployment. This is the only unauthenticated route.
 				Path:        resourcePanelPath,
 				Menu:        "配额预热",
 				Description: "每账号预热计划、下次触发时间与最近结果 / Per-account warmup schedule, next trigger times, and recent results.",
-			},
-			{
-				// No menu label: this is the page's own JSON data feed.
-				Path:        resourceStatusPath,
-				Description: "配额预热状态 JSON（供页面与脚本使用）/ Quota warmup status as JSON (for the panel page and scripts).",
-			},
-			{
-				// No menu label: this is an action endpoint, not a page.
-				Path:        resourceRunPath,
-				Description: "立即触发一轮预热（仅 GET；可选 ?auth=<glob>）/ Trigger an immediate out-of-schedule warmup round (GET only; optional ?auth=<glob>).",
-			},
-			{
-				// No menu label: this is an action endpoint, not a page.
-				Path:        resourceSetPath,
-				Description: "保存面板编辑（仅 GET）。默认文件模式：?auth=<name>&enabled=<bool>&time=<...>&model=<id|auto>，直接写回 quota-warmup.yaml；旧版内联模式：?scope=global|auth&auth=<name>&model=<id|auto> / Save a panel edit (GET only). Default file mode: ?auth=<name>&enabled=<bool>&time=<...>&model=<id|auto>, written directly into quota-warmup.yaml. Legacy v3-inline mode: ?scope=global|auth&auth=<name>&model=<id|auto>.",
-			},
-			{
-				// No menu label: this is the "编辑配置文件" editor's own JSON
-				// data feed (file mode only).
-				Path:        resourceConfigYAMLPath,
-				Description: "quota-warmup.yaml 的原始内容（供面板『编辑配置文件』使用，仅文件模式）/ Raw contents of quota-warmup.yaml (for the panel's \"edit config file\" editor; file mode only).",
-			},
-			{
-				// No menu label: this is an action endpoint, not a page.
-				Path:        resourceConfigYAMLSavePath,
-				Description: "保存面板『编辑配置文件』的修改（仅 GET）：?content=<base64url 编码的 YAML，无 padding>&mtime=<上次读取到的 mtime>；先校验（失败返回 {error,line,column} 且不写盘），mtime 不一致返回冲突提示，通过则原子写入并立即热加载 / Save an edit from the panel's \"edit config file\" editor (GET only): ?content=<base64url-encoded YAML, no padding>&mtime=<the mtime last read>. Validates first (failure returns {error,line,column}, no write); a stale mtime is rejected as a conflict; on success, writes atomically and hot-reloads immediately.",
 			},
 		},
 	}
@@ -124,6 +148,18 @@ func handleManagementRequest(raw []byte) ([]byte, error) {
 		}
 	}
 	trimmed := strings.TrimRight(req.Path, "/")
+
+	// Security check: Only the HTML panel may be accessed via the unauthenticated /v0/resource/ route.
+	// All data feeds and mutating actions (/status, /run, /set, /config-yaml, /config-yaml/save)
+	// require management authentication under /v0/management/.
+	if strings.HasPrefix(trimmed, "/v0/resource/") && !strings.HasSuffix(trimmed, resourcePanelPath) {
+		l := requestLang(nil, req)
+		return okEnvelope(jsonManagementResponse(http.StatusForbidden, map[string]string{
+			"error": tr(l, msgResourceRouteForbidden),
+			"lang":  string(l),
+		}))
+	}
+
 	var resp pluginapi.ManagementResponse
 	switch {
 	case strings.HasSuffix(trimmed, resourceConfigYAMLSavePath):
@@ -583,8 +619,16 @@ func handleRunRequest(req pluginapi.ManagementRequest) pluginapi.ManagementRespo
 	cfg := e.config()
 	l := requestLang(&cfg, req)
 	glob := ""
-	if req.Query != nil {
-		glob = req.Query.Get(runQueryAuthKey)
+	if len(req.Body) > 0 {
+		var bodyPayload struct {
+			Auth string `json:"auth"`
+		}
+		if err := json.Unmarshal(req.Body, &bodyPayload); err == nil && bodyPayload.Auth != "" {
+			glob = strings.TrimSpace(bodyPayload.Auth)
+		}
+	}
+	if glob == "" && req.Query != nil {
+		glob = strings.TrimSpace(req.Query.Get(runQueryAuthKey))
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), runRequestBudget)
 	defer cancel()
@@ -638,10 +682,28 @@ func handleSetRequest(req pluginapi.ManagementRequest) pluginapi.ManagementRespo
 // priority chain. Unchanged from v0.3.0.
 func handleSetRequestInline(e *engine, cfg pluginConfig, l lang, req pluginapi.ManagementRequest) pluginapi.ManagementResponse {
 	var scope, authName, model string
+	if len(req.Body) > 0 {
+		var bodyPayload struct {
+			Scope string `json:"scope"`
+			Auth  string `json:"auth"`
+			Model string `json:"model"`
+		}
+		if err := json.Unmarshal(req.Body, &bodyPayload); err == nil {
+			scope = strings.TrimSpace(bodyPayload.Scope)
+			authName = strings.TrimSpace(bodyPayload.Auth)
+			model = strings.TrimSpace(bodyPayload.Model)
+		}
+	}
 	if req.Query != nil {
-		scope = strings.TrimSpace(req.Query.Get(setQueryScopeKey))
-		authName = strings.TrimSpace(req.Query.Get(setQueryAuthKey))
-		model = strings.TrimSpace(req.Query.Get(setQueryModelKey))
+		if scope == "" {
+			scope = strings.TrimSpace(req.Query.Get(setQueryScopeKey))
+		}
+		if authName == "" {
+			authName = strings.TrimSpace(req.Query.Get(setQueryAuthKey))
+		}
+		if model == "" {
+			model = strings.TrimSpace(req.Query.Get(setQueryModelKey))
+		}
 	}
 	if scope != setScopeGlobal && scope != setScopeAuth {
 		return jsonManagementResponse(http.StatusBadRequest, map[string]string{"error": tr(l, msgSetInvalidScope), "lang": string(l)})
@@ -710,18 +772,43 @@ func handleSetRequestFile(e *engine, cfg pluginConfig, l lang, req pluginapi.Man
 	}
 
 	var authName, enabledRaw, timeRaw, model string
+	var enabledBool *bool
+	if len(req.Body) > 0 {
+		var bodyPayload struct {
+			Auth    string `json:"auth"`
+			Enabled *bool  `json:"enabled"`
+			Time    string `json:"time"`
+			Model   string `json:"model"`
+		}
+		if err := json.Unmarshal(req.Body, &bodyPayload); err == nil {
+			authName = strings.TrimSpace(bodyPayload.Auth)
+			enabledBool = bodyPayload.Enabled
+			timeRaw = strings.TrimSpace(bodyPayload.Time)
+			model = strings.TrimSpace(bodyPayload.Model)
+		}
+	}
 	if req.Query != nil {
-		authName = strings.TrimSpace(req.Query.Get(setQueryAuthKey))
-		enabledRaw = strings.TrimSpace(req.Query.Get(setQueryEnabledKey))
-		timeRaw = strings.TrimSpace(req.Query.Get(setQueryTimeKey))
-		model = strings.TrimSpace(req.Query.Get(setQueryModelKey))
+		if authName == "" {
+			authName = strings.TrimSpace(req.Query.Get(setQueryAuthKey))
+		}
+		if enabledBool == nil && enabledRaw == "" {
+			enabledRaw = strings.TrimSpace(req.Query.Get(setQueryEnabledKey))
+		}
+		if timeRaw == "" {
+			timeRaw = strings.TrimSpace(req.Query.Get(setQueryTimeKey))
+		}
+		if model == "" {
+			model = strings.TrimSpace(req.Query.Get(setQueryModelKey))
+		}
 	}
 	if authName == "" {
 		return jsonManagementResponse(http.StatusBadRequest, map[string]string{"error": tr(l, msgSetAuthRequired), "lang": string(l)})
 	}
 
 	var update warmupFieldUpdate
-	if enabledRaw != "" {
+	if enabledBool != nil {
+		update.Enabled = enabledBool
+	} else if enabledRaw != "" {
 		b, err := strconv.ParseBool(enabledRaw)
 		if err != nil {
 			return jsonManagementResponse(http.StatusBadRequest, map[string]string{"error": tr(l, msgSetInvalidEnabled), "lang": string(l)})
@@ -869,9 +956,23 @@ func handleConfigYAMLSaveRequest(req pluginapi.ManagementRequest) pluginapi.Mana
 	}
 
 	var contentRaw, mtimeRaw string
+	if len(req.Body) > 0 {
+		var bodyPayload struct {
+			Content string `json:"content"`
+			Mtime   string `json:"mtime"`
+		}
+		if err := json.Unmarshal(req.Body, &bodyPayload); err == nil {
+			contentRaw = bodyPayload.Content
+			mtimeRaw = strings.TrimSpace(bodyPayload.Mtime)
+		}
+	}
 	if req.Query != nil {
-		contentRaw = req.Query.Get(configYAMLQueryContentKey)
-		mtimeRaw = strings.TrimSpace(req.Query.Get(configYAMLQueryMtimeKey))
+		if contentRaw == "" {
+			contentRaw = req.Query.Get(configYAMLQueryContentKey)
+		}
+		if mtimeRaw == "" {
+			mtimeRaw = strings.TrimSpace(req.Query.Get(configYAMLQueryMtimeKey))
+		}
 	}
 	if contentRaw == "" {
 		return jsonManagementResponse(http.StatusBadRequest, map[string]string{"error": tr(l, msgConfigYAMLMissingContent), "lang": string(l)})
@@ -882,7 +983,8 @@ func handleConfigYAMLSaveRequest(req pluginapi.ManagementRequest) pluginapi.Mana
 
 	decoded, err := base64.RawURLEncoding.DecodeString(contentRaw)
 	if err != nil {
-		return jsonManagementResponse(http.StatusBadRequest, map[string]string{"error": tr(l, msgConfigYAMLInvalidBase64), "lang": string(l)})
+		// If sent via JSON body as raw string, support direct UTF-8 bytes
+		decoded = []byte(contentRaw)
 	}
 	if len(decoded) > configYAMLMaxContentBytes {
 		return jsonManagementResponse(http.StatusBadRequest, map[string]string{"error": tr(l, msgConfigYAMLTooLarge), "lang": string(l)})

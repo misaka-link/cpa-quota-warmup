@@ -27,7 +27,7 @@ func TestConfigYAMLReadReturnsContentPathAndMtime(t *testing.T) {
 		t.Fatalf("write warmup file: %v", err)
 	}
 
-	status, body := callManagement(t, "/v0/resource/plugins/cpa-quota-warmup/config-yaml", nil)
+	status, body := callManagement(t, "/v0/management/plugins/cpa-quota-warmup/config-yaml", nil)
 	if status != 200 {
 		t.Fatalf("config-yaml read: status=%d body=%s", status, body)
 	}
@@ -64,7 +64,7 @@ func TestConfigYAMLSaveRoundTripsChineseCommentsQuotesBackslashesAndMultiline(t 
 		t.Fatalf("write warmup file: %v", err)
 	}
 
-	status, body := callManagement(t, "/v0/resource/plugins/cpa-quota-warmup/config-yaml", nil)
+	status, body := callManagement(t, "/v0/management/plugins/cpa-quota-warmup/config-yaml", nil)
 	if status != 200 {
 		t.Fatalf("config-yaml read: status=%d body=%s", status, body)
 	}
@@ -83,7 +83,7 @@ func TestConfigYAMLSaveRoundTripsChineseCommentsQuotesBackslashesAndMultiline(t 
 		"    model: auto\n" +
 		"    message: \"hello \\\"world\\\" \\\\ and # not a comment\"\n"
 
-	saveStatus, saveBody := callManagement(t, "/v0/resource/plugins/cpa-quota-warmup/config-yaml/save", url.Values{
+	saveStatus, saveBody := callManagement(t, "/v0/management/plugins/cpa-quota-warmup/config-yaml/save", url.Values{
 		"content": {base64URLNoPad(edited)},
 		"mtime":   {readPayload.Mtime},
 	})
@@ -108,7 +108,7 @@ func TestConfigYAMLSaveRoundTripsChineseCommentsQuotesBackslashesAndMultiline(t 
 
 	// And a subsequent read reflects exactly what was saved, closing the
 	// round trip end to end (not just the write side).
-	status, body = callManagement(t, "/v0/resource/plugins/cpa-quota-warmup/config-yaml", nil)
+	status, body = callManagement(t, "/v0/management/plugins/cpa-quota-warmup/config-yaml", nil)
 	if status != 200 {
 		t.Fatalf("config-yaml re-read: status=%d body=%s", status, body)
 	}
@@ -132,7 +132,7 @@ func TestConfigYAMLSaveNormalizesCRLFToLF(t *testing.T) {
 	if err := os.WriteFile(warmupPath, []byte(initial), 0o644); err != nil {
 		t.Fatalf("write warmup file: %v", err)
 	}
-	status, body := callManagement(t, "/v0/resource/plugins/cpa-quota-warmup/config-yaml", nil)
+	status, body := callManagement(t, "/v0/management/plugins/cpa-quota-warmup/config-yaml", nil)
 	if status != 200 {
 		t.Fatalf("config-yaml read: status=%d body=%s", status, body)
 	}
@@ -142,7 +142,7 @@ func TestConfigYAMLSaveNormalizesCRLFToLF(t *testing.T) {
 	}
 
 	withCRLF := "defaults:\r\n  time: \"05:30\"\r\n  model: auto\r\naccounts:\r\n  a.json:\r\n    enabled: false\r\n    time: \"05:30\"\r\n    model: auto\r\n"
-	saveStatus, saveBody := callManagement(t, "/v0/resource/plugins/cpa-quota-warmup/config-yaml/save", url.Values{
+	saveStatus, saveBody := callManagement(t, "/v0/management/plugins/cpa-quota-warmup/config-yaml/save", url.Values{
 		"content": {base64URLNoPad(withCRLF)},
 		"mtime":   {readPayload.Mtime},
 	})
@@ -166,7 +166,7 @@ func TestConfigYAMLSaveRejectsInvalidTimeExpressionWithLineAndColumn(t *testing.
 	if err := os.WriteFile(warmupPath, []byte(initial), 0o644); err != nil {
 		t.Fatalf("write warmup file: %v", err)
 	}
-	status, body := callManagement(t, "/v0/resource/plugins/cpa-quota-warmup/config-yaml", nil)
+	status, body := callManagement(t, "/v0/management/plugins/cpa-quota-warmup/config-yaml", nil)
 	if status != 200 {
 		t.Fatalf("config-yaml read: status=%d body=%s", status, body)
 	}
@@ -176,7 +176,7 @@ func TestConfigYAMLSaveRejectsInvalidTimeExpressionWithLineAndColumn(t *testing.
 	}
 
 	bad := "defaults:\n  time: \"not-a-time\"\n  model: auto\naccounts: {}\n"
-	saveStatus, saveBody := callManagement(t, "/v0/resource/plugins/cpa-quota-warmup/config-yaml/save", url.Values{
+	saveStatus, saveBody := callManagement(t, "/v0/management/plugins/cpa-quota-warmup/config-yaml/save", url.Values{
 		"content": {base64URLNoPad(bad)},
 		"mtime":   {readPayload.Mtime},
 	})
@@ -214,7 +214,7 @@ func TestConfigYAMLSaveRejectsMalformedYAMLSyntax(t *testing.T) {
 	if err := os.WriteFile(warmupPath, []byte(initial), 0o644); err != nil {
 		t.Fatalf("write warmup file: %v", err)
 	}
-	status, body := callManagement(t, "/v0/resource/plugins/cpa-quota-warmup/config-yaml", nil)
+	status, body := callManagement(t, "/v0/management/plugins/cpa-quota-warmup/config-yaml", nil)
 	if status != 200 {
 		t.Fatalf("config-yaml read: status=%d body=%s", status, body)
 	}
@@ -224,7 +224,7 @@ func TestConfigYAMLSaveRejectsMalformedYAMLSyntax(t *testing.T) {
 	}
 
 	malformed := "defaults: [this is not\n  a valid: mapping\n"
-	saveStatus, saveBody := callManagement(t, "/v0/resource/plugins/cpa-quota-warmup/config-yaml/save", url.Values{
+	saveStatus, saveBody := callManagement(t, "/v0/management/plugins/cpa-quota-warmup/config-yaml/save", url.Values{
 		"content": {base64URLNoPad(malformed)},
 		"mtime":   {readPayload.Mtime},
 	})
@@ -248,7 +248,7 @@ func TestConfigYAMLSaveRejectsStaleMtimeAsConflict(t *testing.T) {
 	if err := os.WriteFile(warmupPath, []byte(initial), 0o644); err != nil {
 		t.Fatalf("write warmup file: %v", err)
 	}
-	status, body := callManagement(t, "/v0/resource/plugins/cpa-quota-warmup/config-yaml", nil)
+	status, body := callManagement(t, "/v0/management/plugins/cpa-quota-warmup/config-yaml", nil)
 	if status != 200 {
 		t.Fatalf("config-yaml read: status=%d body=%s", status, body)
 	}
@@ -267,7 +267,7 @@ func TestConfigYAMLSaveRejectsStaleMtimeAsConflict(t *testing.T) {
 		t.Fatalf("simulate a concurrent edit: %v", err)
 	}
 
-	saveStatus, saveBody := callManagement(t, "/v0/resource/plugins/cpa-quota-warmup/config-yaml/save", url.Values{
+	saveStatus, saveBody := callManagement(t, "/v0/management/plugins/cpa-quota-warmup/config-yaml/save", url.Values{
 		"content": {base64URLNoPad("defaults:\n  time: \"06:00\"\n  model: auto\naccounts: {}\n")},
 		"mtime":   {readPayload.Mtime},
 	})
@@ -292,15 +292,15 @@ func TestConfigYAMLSaveRejectsMissingParams(t *testing.T) {
 		t.Fatalf("write warmup file: %v", err)
 	}
 
-	status, _ := callManagement(t, "/v0/resource/plugins/cpa-quota-warmup/config-yaml/save", url.Values{"mtime": {"whatever"}})
+	status, _ := callManagement(t, "/v0/management/plugins/cpa-quota-warmup/config-yaml/save", url.Values{"mtime": {"whatever"}})
 	if status != 400 {
 		t.Fatalf("expected 400 for a missing content param, got %d", status)
 	}
-	status, _ = callManagement(t, "/v0/resource/plugins/cpa-quota-warmup/config-yaml/save", url.Values{"content": {base64URLNoPad("x: 1\n")}})
+	status, _ = callManagement(t, "/v0/management/plugins/cpa-quota-warmup/config-yaml/save", url.Values{"content": {base64URLNoPad("x: 1\n")}})
 	if status != 400 {
 		t.Fatalf("expected 400 for a missing mtime param, got %d", status)
 	}
-	status, _ = callManagement(t, "/v0/resource/plugins/cpa-quota-warmup/config-yaml/save", url.Values{"content": {"not valid base64url!!"}, "mtime": {"whatever"}})
+	status, _ = callManagement(t, "/v0/management/plugins/cpa-quota-warmup/config-yaml/save", url.Values{"content": {"not valid base64url!!"}, "mtime": {"whatever"}})
 	if status != 400 {
 		t.Fatalf("expected 400 for invalid base64url content, got %d", status)
 	}
@@ -310,11 +310,11 @@ func TestConfigYAMLRoutesRejectNonFileModes(t *testing.T) {
 	t.Run("legacy", func(t *testing.T) {
 		e := registerNewFormat(t, "timezone: UTC\nproviders:\n  antigravity: { model: m }\n")
 		e.auths = fakeAuthLister{entries: []pluginapi.HostAuthFileEntry{{Name: "a.json", Provider: "antigravity"}}}
-		status, _ := callManagement(t, "/v0/resource/plugins/cpa-quota-warmup/config-yaml", nil)
+		status, _ := callManagement(t, "/v0/management/plugins/cpa-quota-warmup/config-yaml", nil)
 		if status != 501 {
 			t.Fatalf("expected 501 for config-yaml under legacy mode, got %d", status)
 		}
-		status, _ = callManagement(t, "/v0/resource/plugins/cpa-quota-warmup/config-yaml/save", url.Values{"content": {"x"}, "mtime": {"y"}})
+		status, _ = callManagement(t, "/v0/management/plugins/cpa-quota-warmup/config-yaml/save", url.Values{"content": {"x"}, "mtime": {"y"}})
 		if status != 501 {
 			t.Fatalf("expected 501 for config-yaml/save under legacy mode, got %d", status)
 		}
@@ -322,9 +322,76 @@ func TestConfigYAMLRoutesRejectNonFileModes(t *testing.T) {
 	t.Run("v3inline", func(t *testing.T) {
 		e := registerNewFormat(t, "time: \"05:30\"\naccounts: [\"*\"]\n")
 		e.auths = fakeAuthLister{entries: []pluginapi.HostAuthFileEntry{{Name: "a.json", Provider: "codex"}}}
-		status, _ := callManagement(t, "/v0/resource/plugins/cpa-quota-warmup/config-yaml", nil)
+		status, _ := callManagement(t, "/v0/management/plugins/cpa-quota-warmup/config-yaml", nil)
 		if status != 501 {
 			t.Fatalf("expected 501 for config-yaml under v3inline mode, got %d", status)
 		}
 	})
+}
+
+func TestConfigYAMLSaveRejectsUnknownFields(t *testing.T) {
+	e, warmupPath := registerFileMode(t, "")
+	e.auths = fakeAuthLister{entries: []pluginapi.HostAuthFileEntry{{Name: "a.json", Provider: "codex"}}}
+	initial := "defaults:\n  time: \"05:30\"\n  model: auto\naccounts:\n  a.json:\n    enabled: false\n    time: \"05:30\"\n    model: auto\n"
+	if err := os.WriteFile(warmupPath, []byte(initial), 0o644); err != nil {
+		t.Fatalf("write warmup file: %v", err)
+	}
+	status, body := callManagement(t, "/v0/management/plugins/cpa-quota-warmup/config-yaml", nil)
+	if status != 200 {
+		t.Fatalf("read status=%d", status)
+	}
+	var readPayload configYAMLPayload
+	_ = json.Unmarshal(body, &readPayload)
+
+	// Unknown field at root: foo: bar
+	badYAML1 := "foo: bar\n"
+	saveStatus, saveBody := callManagement(t, "/v0/management/plugins/cpa-quota-warmup/config-yaml/save", url.Values{
+		"content": {base64URLNoPad(badYAML1)},
+		"mtime":   {readPayload.Mtime},
+	})
+	if saveStatus != 400 {
+		t.Fatalf("expected 400 for unknown root field, got %d body=%s", saveStatus, saveBody)
+	}
+
+	// Unknown field at root: api-keys: [sk-evil]
+	badYAML2 := "api-keys:\n  - sk-evil\n"
+	saveStatus, saveBody = callManagement(t, "/v0/management/plugins/cpa-quota-warmup/config-yaml/save", url.Values{
+		"content": {base64URLNoPad(badYAML2)},
+		"mtime":   {readPayload.Mtime},
+	})
+	if saveStatus != 400 {
+		t.Fatalf("expected 400 for api-keys injection, got %d body=%s", saveStatus, saveBody)
+	}
+
+	// Unknown field under defaults
+	badYAML3 := "defaults:\n  time: \"05:30\"\n  unknown_opt: true\n"
+	saveStatus, saveBody = callManagement(t, "/v0/management/plugins/cpa-quota-warmup/config-yaml/save", url.Values{
+		"content": {base64URLNoPad(badYAML3)},
+		"mtime":   {readPayload.Mtime},
+	})
+	if saveStatus != 400 {
+		t.Fatalf("expected 400 for unknown defaults field, got %d body=%s", saveStatus, saveBody)
+	}
+
+	// Unknown field under account
+	badYAML4 := "accounts:\n  a.json:\n    enabled: true\n    bad_key: evil\n"
+	saveStatus, saveBody = callManagement(t, "/v0/management/plugins/cpa-quota-warmup/config-yaml/save", url.Values{
+		"content": {base64URLNoPad(badYAML4)},
+		"mtime":   {readPayload.Mtime},
+	})
+	if saveStatus != 400 {
+		t.Fatalf("expected 400 for unknown account field, got %d body=%s", saveStatus, saveBody)
+	}
+}
+
+func TestConfigYAMLRejectsResourceRoute(t *testing.T) {
+	_, _ = registerFileMode(t, "")
+	status, body := callManagement(t, "/v0/resource/plugins/cpa-quota-warmup/config-yaml", nil)
+	if status != 403 {
+		t.Fatalf("expected 403 when accessing config-yaml via /v0/resource, got %d body=%s", status, body)
+	}
+	saveStatus, saveBody := callManagement(t, "/v0/resource/plugins/cpa-quota-warmup/config-yaml/save", url.Values{"content": {"x"}, "mtime": {"y"}})
+	if saveStatus != 403 {
+		t.Fatalf("expected 403 when accessing config-yaml/save via /v0/resource, got %d body=%s", saveStatus, saveBody)
+	}
 }

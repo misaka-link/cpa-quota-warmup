@@ -124,7 +124,7 @@ func TestHandleMethodLifecycle(t *testing.T) {
 		t.Fatalf("expected usage.handle to record one entry, got %d", e.ring.len())
 	}
 
-	statusReq, _ := json.Marshal(pluginapi.ManagementRequest{Method: "GET", Path: "/v0/resource/plugins/cpa-quota-warmup/status"})
+	statusReq, _ := json.Marshal(pluginapi.ManagementRequest{Method: "GET", Path: "/v0/management/plugins/cpa-quota-warmup/status"})
 	statusResp, err := handleMethod(pluginabi.MethodManagementHandle, statusReq)
 	if err != nil {
 		t.Fatalf("management.handle(status): %v", err)
@@ -199,7 +199,7 @@ func TestStatusAndRunResponsesCarryLang(t *testing.T) {
 		t.Helper()
 		req := pluginapi.ManagementRequest{
 			Method:  "GET",
-			Path:    "/v0/resource/plugins/cpa-quota-warmup/status",
+			Path:    "/v0/management/plugins/cpa-quota-warmup/status",
 			Query:   query,
 			Headers: headers,
 		}
@@ -258,7 +258,7 @@ func TestStatusAndRunResponsesCarryLang(t *testing.T) {
 	// The run route reports the same "lang" field.
 	runReq := pluginapi.ManagementRequest{
 		Method: "GET",
-		Path:   "/v0/resource/plugins/cpa-quota-warmup/run",
+		Path:   "/v0/management/plugins/cpa-quota-warmup/run",
 		Query:  url.Values{"lang": {"ru"}, "auth": {"no-such-account-*"}},
 	}
 	raw, _ := json.Marshal(runReq)
@@ -280,5 +280,37 @@ func TestStatusAndRunResponsesCarryLang(t *testing.T) {
 	}
 	if runResult.Lang != string(langRU) {
 		t.Fatalf("run Lang = %q, want ru", runResult.Lang)
+	}
+}
+
+func TestManagementRegistrationRoutesAndResources(t *testing.T) {
+	resp := managementRegistration()
+	if len(resp.Resources) != 1 {
+		t.Fatalf("expected exactly 1 resource route (the panel), got %d: %+v", len(resp.Resources), resp.Resources)
+	}
+	if resp.Resources[0].Path != resourcePanelPath || resp.Resources[0].Menu == "" {
+		t.Fatalf("resource route mismatch: %+v", resp.Resources[0])
+	}
+	if len(resp.Routes) == 0 {
+		t.Fatalf("expected management routes to be registered, got 0")
+	}
+	routesMap := make(map[string]bool)
+	for _, r := range resp.Routes {
+		routesMap[r.Method+" "+r.Path] = true
+	}
+	expected := []string{
+		"GET /plugins/cpa-quota-warmup/status",
+		"POST /plugins/cpa-quota-warmup/run",
+		"GET /plugins/cpa-quota-warmup/run",
+		"POST /plugins/cpa-quota-warmup/set",
+		"GET /plugins/cpa-quota-warmup/set",
+		"GET /plugins/cpa-quota-warmup/config-yaml",
+		"POST /plugins/cpa-quota-warmup/config-yaml/save",
+		"GET /plugins/cpa-quota-warmup/config-yaml/save",
+	}
+	for _, exp := range expected {
+		if !routesMap[exp] {
+			t.Errorf("missing expected management route: %s", exp)
+		}
 	}
 }

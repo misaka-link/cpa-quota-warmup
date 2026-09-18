@@ -133,7 +133,7 @@ func (m *warmupFileManager) ensureFresh(entries []pluginapi.HostAuthFileEntry) e
 		return m.reparseAndReconcileLocked(entries)
 	}
 
-	if !m.everLoaded || info.ModTime().After(m.loadedAt) {
+	if !m.everLoaded || !info.ModTime().Equal(m.loadedAt) {
 		if err := m.reparseLocked(); err != nil {
 			// Keep whatever m.data/m.root already held (possibly the zero
 			// value, if this is the very first load) -- never let a parse
@@ -195,8 +195,10 @@ func (m *warmupFileManager) reparseLocked() error {
 	if len(root.Content) == 0 {
 		return fmt.Errorf("parse %s: empty document", m.path)
 	}
+	dec := yaml.NewDecoder(bytes.NewReader(raw))
+	dec.KnownFields(true)
 	var data warmupFileData
-	if err := root.Content[0].Decode(&data); err != nil {
+	if err := dec.Decode(&data); err != nil {
 		return fmt.Errorf("parse %s: %w", m.path, err)
 	}
 	if data.Accounts == nil {
@@ -401,11 +403,16 @@ func (m *warmupFileManager) writeAtomicLocked(data []byte) error {
 	if err := os.MkdirAll(filepath.Dir(m.path), 0o755); err != nil {
 		return fmt.Errorf("create dir for %s: %w", m.path, err)
 	}
+	mode := os.FileMode(0o644)
+	if fi, statErr := os.Stat(m.path); statErr == nil {
+		mode = fi.Mode().Perm()
+	}
 	tmp, err := os.CreateTemp(filepath.Dir(m.path), ".quota-warmup-*.tmp")
 	if err != nil {
 		return fmt.Errorf("create temp file for %s: %w", m.path, err)
 	}
 	tmpPath := tmp.Name()
+	_ = tmp.Chmod(mode)
 	defer func() { _ = os.Remove(tmpPath) }()
 	if _, err := tmp.Write(data); err != nil {
 		_ = tmp.Close()
@@ -562,9 +569,15 @@ func validateWarmupYAMLContent(content []byte) (warmupFileData, *configYAMLValid
 		return warmupFileData{}, &configYAMLValidationError{Message: "内容为空文档", Line: 1, Column: 1}
 	}
 	top := root.Content[0]
+	dec := yaml.NewDecoder(bytes.NewReader(content))
+	dec.KnownFields(true)
 	var data warmupFileData
-	if err := top.Decode(&data); err != nil {
+	if err := dec.Decode(&data); err != nil {
 		return warmupFileData{}, &configYAMLValidationError{Message: err.Error(), Line: yamlErrorLine(err), Column: 1}
+	}
+	var extra any
+	if err := dec.Decode(&extra); err == nil {
+		return warmupFileData{}, &configYAMLValidationError{Message: "仅支持单个 YAML 文档", Line: 1, Column: 1}
 	}
 	if data.Accounts == nil {
 		data.Accounts = map[string]warmupFileAccount{}

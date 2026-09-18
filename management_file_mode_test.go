@@ -22,7 +22,7 @@ func registerFileMode(t *testing.T, extraYAML string) (*engine, string) {
 	t.Cleanup(shutdownEngine)
 	shutdownEngine()
 	warmupPath := filepath.Join(t.TempDir(), "quota-warmup.yaml")
-	yamlDoc := "enabled: true\nconfig-file: \"" + warmupPath + "\"\n" + extraYAML
+	yamlDoc := "enabled: true\nconfig-file: \"" + filepath.ToSlash(warmupPath) + "\"\n" + extraYAML
 	raw, err := json.Marshal(struct {
 		ConfigYAML []byte `json:"config_yaml"`
 	}{ConfigYAML: []byte(yamlDoc)})
@@ -44,7 +44,7 @@ func TestFileModeStatusShowsModeAndConfigFile(t *testing.T) {
 	e, warmupPath := registerFileMode(t, "")
 	e.auths = fakeAuthLister{entries: []pluginapi.HostAuthFileEntry{{Name: "a.json", Provider: "codex"}}}
 
-	status, body := callManagement(t, "/v0/resource/plugins/cpa-quota-warmup/status", nil)
+	status, body := callManagement(t, "/v0/management/plugins/cpa-quota-warmup/status", nil)
 	if status != http.StatusOK {
 		t.Fatalf("status: %d body=%s", status, body)
 	}
@@ -87,17 +87,17 @@ func TestFileModeSetRouteEnablesAndSchedulesAccount(t *testing.T) {
 	e.auths = fakeAuthLister{entries: []pluginapi.HostAuthFileEntry{{Name: "a.json", Provider: "codex"}}}
 
 	// Ensure the file exists (mirrors what a real tick/status call would do).
-	if _, body := callManagement(t, "/v0/resource/plugins/cpa-quota-warmup/status", nil); false {
+	if _, body := callManagement(t, "/v0/management/plugins/cpa-quota-warmup/status", nil); false {
 		t.Log(string(body))
 	}
 
-	setPath := "/v0/resource/plugins/cpa-quota-warmup/set"
+	setPath := "/v0/management/plugins/cpa-quota-warmup/set"
 	status, body := callManagement(t, setPath, url.Values{"auth": {"a.json"}, "enabled": {"true"}, "time": {"10:30"}})
 	if status != http.StatusOK {
 		t.Fatalf("set: status=%d body=%s", status, body)
 	}
 
-	status, body = callManagement(t, "/v0/resource/plugins/cpa-quota-warmup/status", nil)
+	status, body = callManagement(t, "/v0/management/plugins/cpa-quota-warmup/status", nil)
 	if status != http.StatusOK {
 		t.Fatalf("status: %d body=%s", status, body)
 	}
@@ -145,7 +145,7 @@ func TestFileModeSetRouteValidatesModelAgainstAvailableList(t *testing.T) {
 	e, _ := registerFileMode(t, "advanced:\n  base-url: \""+modelsSrv.URL+"\"\n  api-key: \"sk-test\"\n")
 	e.auths = fakeAuthLister{entries: []pluginapi.HostAuthFileEntry{{Name: "a.json", Provider: "codex"}}}
 
-	setPath := "/v0/resource/plugins/cpa-quota-warmup/set"
+	setPath := "/v0/management/plugins/cpa-quota-warmup/set"
 	status, body := callManagement(t, setPath, url.Values{"auth": {"a.json"}, "model": {"no-such-model"}})
 	if status != http.StatusBadRequest {
 		t.Fatalf("expected 400 for an unavailable model, status=%d body=%s", status, body)
@@ -160,7 +160,7 @@ func TestInlineModesReportModeInlineAndSetIsGated(t *testing.T) {
 	t.Run("legacy", func(t *testing.T) {
 		e := registerNewFormat(t, "timezone: UTC\nproviders:\n  antigravity: { model: m }\n")
 		e.auths = fakeAuthLister{entries: []pluginapi.HostAuthFileEntry{{Name: "a.json", Provider: "antigravity"}}}
-		status, body := callManagement(t, "/v0/resource/plugins/cpa-quota-warmup/status", nil)
+		status, body := callManagement(t, "/v0/management/plugins/cpa-quota-warmup/status", nil)
 		if status != http.StatusOK {
 			t.Fatalf("status: %d body=%s", status, body)
 		}
@@ -172,7 +172,7 @@ func TestInlineModesReportModeInlineAndSetIsGated(t *testing.T) {
 			t.Fatalf("Config = %+v, want mode=inline legacy_mode=true", payload.Config)
 		}
 
-		setStatus, setBody := callManagement(t, "/v0/resource/plugins/cpa-quota-warmup/set", url.Values{"scope": {"global"}, "model": {"x"}})
+		setStatus, setBody := callManagement(t, "/v0/management/plugins/cpa-quota-warmup/set", url.Values{"scope": {"global"}, "model": {"x"}})
 		if setStatus != http.StatusNotImplemented {
 			t.Fatalf("expected 501 for /set under legacy mode, got %d body=%s", setStatus, setBody)
 		}
@@ -181,7 +181,7 @@ func TestInlineModesReportModeInlineAndSetIsGated(t *testing.T) {
 	t.Run("v3inline", func(t *testing.T) {
 		e := registerNewFormat(t, "time: \"05:30\"\naccounts: [\"*\"]\n")
 		e.auths = fakeAuthLister{entries: []pluginapi.HostAuthFileEntry{{Name: "a.json", Provider: "codex"}}}
-		status, body := callManagement(t, "/v0/resource/plugins/cpa-quota-warmup/status", nil)
+		status, body := callManagement(t, "/v0/management/plugins/cpa-quota-warmup/status", nil)
 		if status != http.StatusOK {
 			t.Fatalf("status: %d body=%s", status, body)
 		}

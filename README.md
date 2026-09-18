@@ -282,25 +282,29 @@ python3 integration_abi_test.py dist/cpa-quota-warmup-v0.6.3.so
 # 3. 部署后看宿主日志（host.log 回调，前缀 [cpa-quota-warmup]）
 journalctl -u cli-proxy-api | rg 'cpa-quota-warmup'
 
-# 4. 状态页面（HTML，免鉴权，管理中心菜单里也能进），跟随管理中心的语言与主题
+# 4. 状态页面（HTML，管理中心菜单里也能进），跟随管理中心的语言与主题
 open http://127.0.0.1:8317/v0/resource/plugins/cpa-quota-warmup/panel
 
-# 5. 状态 JSON（页面本身用的数据源；?lang= 可强制语言，不传则按 Accept-Language/LANG 协商）
-curl -s 'http://127.0.0.1:8317/v0/resource/plugins/cpa-quota-warmup/status?lang=ru' | jq .
+# 5. 状态 JSON（带管理鉴权；?lang= 可强制语言，不传则按 Accept-Language/LANG 协商）
+curl -s -H "Authorization: Bearer <管理密钥>" 'http://127.0.0.1:8317/v0/management/plugins/cpa-quota-warmup/status?lang=ru' | jq .
 
-# 6. 立即手动触发一轮（GET，见下方"宿主事实核实"里为什么不是 POST）
-curl -s 'http://127.0.0.1:8317/v0/resource/plugins/cpa-quota-warmup/run?auth=antigravity-*' | jq .
+# 6. 立即手动触发一轮（POST/GET，带管理鉴权）
+curl -s -X POST -H "Authorization: Bearer <管理密钥>" 'http://127.0.0.1:8317/v0/management/plugins/cpa-quota-warmup/run?auth=antigravity-*' | jq .
 
-# 7. 文件模式：直接编辑 quota-warmup.yaml 打开某个账号，或者用面板/命令行等效调用（GET）
-curl -s 'http://127.0.0.1:8317/v0/resource/plugins/cpa-quota-warmup/set?auth=antigravity-alice.json&enabled=true&model=gemini-3.7-flash-high' | jq .
+# 7. 文件模式：直接编辑 quota-warmup.yaml 打开某个账号，或者用面板/命令行调用（POST/GET，带管理鉴权）
+curl -s -X POST -H "Authorization: Bearer <管理密钥>" -H "Content-Type: application/json" \
+  -d '{"auth":"antigravity-alice.json","enabled":true,"model":"gemini-3.7-flash-high"}' \
+  'http://127.0.0.1:8317/v0/management/plugins/cpa-quota-warmup/set' | jq .
 
 # 8. cpa-usage-panel 里应该能看到这些请求（provider=对应 provider，model=配置的模型，
 #    时间落在计划的 HH:MM 附近），确认预热请求确实打到了上游而不是本地短路
 
-# 9. v0.5.0：面板在线编辑 quota-warmup.yaml（读 -> base64url 编码修改后的内容 -> 用读到的 mtime 保存）
-MTIME=$(curl -s 'http://127.0.0.1:8317/v0/resource/plugins/cpa-quota-warmup/config-yaml' | jq -r .mtime)
+# 9. 面板在线编辑 quota-warmup.yaml（读 -> base64url 编码修改后的内容 -> 用读到的 mtime 保存，带管理鉴权与白名单字段校验）
+MTIME=$(curl -s -H "Authorization: Bearer <管理密钥>" 'http://127.0.0.1:8317/v0/management/plugins/cpa-quota-warmup/config-yaml' | jq -r .mtime)
 CONTENT=$(printf 'defaults:\n  time: "05:30"\n  model: auto\naccounts: {}\n' | base64 -w0 | tr '+/' '-_' | tr -d '=')
-curl -s "http://127.0.0.1:8317/v0/resource/plugins/cpa-quota-warmup/config-yaml/save?content=${CONTENT}&mtime=${MTIME}" | jq .
+curl -s -X POST -H "Authorization: Bearer <管理密钥>" -H "Content-Type: application/json" \
+  -d "{\"content\":\"${CONTENT}\",\"mtime\":\"${MTIME}\"}" \
+  'http://127.0.0.1:8317/v0/management/plugins/cpa-quota-warmup/config-yaml/save' | jq .
 ```
 
 ## 宿主事实核实结果（与任务原始假设的出入）
@@ -308,7 +312,12 @@ curl -s "http://127.0.0.1:8317/v0/resource/plugins/cpa-quota-warmup/config-yaml/
 对照 CLIProxyAPI v7.2.158 源码（`$(go env GOMODCACHE)/github.com/router-for-me/!c!l!i!proxy!a!p!i/v7@v7.2.158`）核实，以下几点与最初给出的方案假设**不一致**，已按下述结论实现：
 
 1. **`UsageRecord.SessionID` 不等于我们发的 `X-Session-ID` 原始值，而是带 `"header:"` 前缀。** `sdk/cliproxy/session/info.go` 的 `ExtractSessionInfo`（"5. OpenCode / Pi Slot / Task / Generic Headers"分支）执行 `info.SessionID = "header:" + sid`；这条路径经 `internal/pluginhost/adapters_usage_translation.go` 的 `usageAdapter.HandleUsage` 原样传给插件的 `UsageRecord.SessionID`。插件里所有按会话标记做覆盖核对的地方都已按 `"header:" + tag` 匹配（见 `usage.go` 的 `sessionHeaderRecordPrefix`），不是原方案假设的原始值直接相等。
-2. **CPA 资源路由（`/v0/resource/plugins/<id>/...`）只接受 GET，POST 在宿主层就被拒绝。** `internal/pluginhost/management.go` 的 `ServeResourceHTTP` 开头即 `if !strings.EqualFold(r.Method, http.MethodGet) { return false }`——POST 请求根本不会构造 `ManagementRequest` 转发给插件，直接在 gin 路由层 404。要注册真正的 POST 路由，只能用 `Routes: []ManagementRoute{...}`（`/v0/management/` 前缀），但那一族路由**是要管理鉴权的**，与任务里"两个路由都免鉴权"的要求冲突。按最小合理假设，`run` 触发端点改成了 **GET**（`?auth=<glob>` 走 query string），继续挂在免鉴权的 resource 路由下；README 与代码注释（`management.go`）都记录了这个取舍。
+2. **管理路由与安全鉴权：所有数据与动作端点已全面纳入宿主 ManagementRoute。** 宿主 SDK（`sdk/pluginapi/types.go`）区分了无鉴权的 `ResourceRoute`（`/v0/resource/plugins/<id>/...`，仅允许 GET）与强鉴权的 `ManagementRoute`（`/v0/management/` 前缀，支持 GET/POST 并由宿主中间件强制校验管理密钥）。为保障数据安全性与防范未授权配置变更，本插件仅将供浏览器展示的静态页面 `/panel` 挂在 Resource 路由下；所有敏感读取与变更接口（`/status`、`/run`、`/set`、`/config-yaml`、`/config-yaml/save`）均注册为 `ManagementRoute`（`/v0/management/plugins/cpa-quota-warmup/...`）并支持 POST/GET。面板在前端通过解析 `localStorage` 的管理密钥或会话输入透明传递 Bearer Token，未鉴权的外部请求均被宿主与插件直接拒绝。
+3. **`host.model.execute` 确实不产生 usage 记录**，与任务给出的判断一致（`sdk/api/handlers/handlers_execution.go:205`，`InternalSource=true` 时跳过 usage 上报），已按此确认改用普通 HTTP 客户端。
+4. **`POST /v1/chat/completions` 的路径、`max_tokens`、`reasoning_effort` 字段均按任务描述核实无误。** `internal/api/server_routes.go:66` 注册路由；`sdk/api/handlers/openai/openai_handlers.go:211-212` 显式读取并转发 `max_tokens`；`reasoning_effort` 由通用的 `internal/thinking/apply.go` 的 `extractOpenAIConfig` 解析（"OpenAI Chat Completions format" 的合法输入，`none/low/medium/high` 离散档位），不是本插件凭空加的字段，会被正常应用到匹配的模型/provider 上。实际是否被下游 codex 执行器采纳成 upstream 请求未做端到端验证（没有真实 codex 账号可测）。
+5. **模型名的 provider 前缀语法（`provider/model` 或 `provider:model`）在 `/v1/chat/completions` 这条路径上不存在。** `ForcedProvider`（`sdk/api/handlers/model_execution.go`）只能通过插件内部的 `ProtocolExecutionRequest`/Gemini Interactions 的 `agent` 参数设置，普通客户端请求体的 `model` 字段没有任何解析出 provider 前缀的逻辑（`sdk/api/handlers/handlers_routing.go` 的 `providersForExecution` 只在 `execOptions.ForcedProvider` 已经非空时才用它，而这个值不会从请求体里派生）。因此本插件严格依赖"每个 provider 配置一个在该 provider 唯一存在的模型名"这一假设，与任务描述的兜底方案一致，未发现更好的替代方案。
+6. **`pluginapi.ManagementRequest` 确实带 `Query`（`url.Values`）与 `Headers`（`http.Header`）字段**，且 `internal/pluginhost/management.go` 的 `ServeResourceHTTP` 在构造它时会把真实请求的 query string 和请求头原样克隆进去（`cloneHeader(r.Header)` / `cloneValues(r.URL.Query())`）。所以 `status`/`run`/`panel` 三个路由都能直接读到 `?lang=` 和 `Accept-Language`，不需要"只能退化到路径/查询串"那种更弱的方案。
+7. **`cli-proxy-language` 的实际存储格式**：对照一份真实的 `/var/lib/cli-proxy-api/static/management.html` 构建反查得到的函数（对应变量名 `ll`/`ul`/`dl`/`cl`/`sl`/`ol`），确认它是 zustand `persist` 中间件写的，取值可能是 `{"state":{"language":"zh-CN"},...}` 这种信封、也可能是裸 JSON 字符串 `"zh-CN"`、极端情况下甚至是完全不带引号的裸字符串——三种都要兼容解析（本插件页面里的 `parseStored()` 照此实现）；`navigator.language` 兜底规则是 `zh-tw`/`zh-hk`/`zh-mo`/`zh-hant` 前缀 → `zh-TW`，`zh*` → `zh-CN`，`ru*` → `ru`，其余 → `en`，与任务描述完全一致，已按真实源码核实（不是假设）。
 3. **`host.model.execute` 确实不产生 usage 记录**，与任务给出的判断一致（`sdk/api/handlers/handlers_execution.go:205`，`InternalSource=true` 时跳过 usage 上报），已按此确认改用普通 HTTP 客户端。
 4. **`POST /v1/chat/completions` 的路径、`max_tokens`、`reasoning_effort` 字段均按任务描述核实无误。** `internal/api/server_routes.go:66` 注册路由；`sdk/api/handlers/openai/openai_handlers.go:211-212` 显式读取并转发 `max_tokens`；`reasoning_effort` 由通用的 `internal/thinking/apply.go` 的 `extractOpenAIConfig` 解析（"OpenAI Chat Completions format" 的合法输入，`none/low/medium/high` 离散档位），不是本插件凭空加的字段，会被正常应用到匹配的模型/provider 上。实际是否被下游 codex 执行器采纳成 upstream 请求未做端到端验证（没有真实 codex 账号可测）。
 5. **模型名的 provider 前缀语法（`provider/model` 或 `provider:model`）在 `/v1/chat/completions` 这条路径上不存在。** `ForcedProvider`（`sdk/api/handlers/model_execution.go`）只能通过插件内部的 `ProtocolExecutionRequest`/Gemini Interactions 的 `agent` 参数设置，普通客户端请求体的 `model` 字段没有任何解析出 provider 前缀的逻辑（`sdk/api/handlers/handlers_routing.go` 的 `providersForExecution` 只在 `execOptions.ForcedProvider` 已经非空时才用它，而这个值不会从请求体里派生）。因此本插件严格依赖"每个 provider 配置一个在该 provider 唯一存在的模型名"这一假设，与任务描述的兜底方案一致，未发现更好的替代方案。
@@ -330,7 +339,6 @@ curl -s "http://127.0.0.1:8317/v0/resource/plugins/cpa-quota-warmup/config-yaml/
 ## 已知限制
 
 - 覆盖不保证 100%：round-robin 打散是"尽力而为"，`max-rounds` 用尽后放弃并只记警告，不会无限重试。
-- `run` 只能是 GET（见上）。
 - 手动触发（`run`）不写入按时间点的 `state.json`（不影响当天定时槽位的判定），只受每账号 60 秒节流保护，避免连点。
 - 模型预检只确认 `GET /v1/models` 列出了这个名字，不代表这个模型这个账号一定能用（例如账号自身权限/额度问题仍可能在实际发送时报错）；预检本身失败（网络问题等）会被当作"跳过预检，照常发送"处理，不会阻塞正常预热。
 - 状态页面首次渲染用服务端猜的语言（`?lang=`/`Accept-Language`/`LANG` 那条链，没有访问 localStorage 的能力），JS 加载后立即按 `cli-proxy-language`/`navigator.language` 校正；两者通常一致（浏览器语言与 `Accept-Language` 头本来就同源），但理论上 JS 执行前有极短暂的窗口可能显示了另一种语言的静态文案。
@@ -343,7 +351,8 @@ curl -s "http://127.0.0.1:8317/v0/resource/plugins/cpa-quota-warmup/config-yaml/
 - **Node 级 YAML 编辑对"空 mapping 会被序列化成 flow style（`accounts: {}`）"这个 `yaml.v3` 行为做了专门规避**（否则再往里追加带行尾注释的账号段会生成语法错误的 YAML）；这是实现过程中用真实单元测试挖出的一个真 bug，已通过强制恢复 block style 修复，回归测试见 `warmupfile_test.go` 的 `TestWarmupFileManagerSetAccountCreatesMissingSection`。
 - overrides.json 迁移到 `quota-warmup.yaml` 只发生一次（迁移后原文件被重命名），且只搬运模型覆盖，不搬运"账号是否启用"的状态，见"面板与模型选择"一节。
 - 三种配置模式（文件 / v0.3.0 内联 / v0.1-v0.2 内联）互斥且按固定优先级探测（先查旧版顶层键，再查 v0.3.0 顶层键，都没有才是文件模式）；同一份 `config.yaml` 不支持混着写（比如顶层既有 `time:` 又想用文件模式）。
-- **`GET .../config-yaml`/`GET .../config-yaml/save` 和其他 resource 路由一样不做鉴权**（这是这类路由在这台宿主上的既有约束，见"机制"/"宿主事实核实结果"）——也就是说任何能访问到 CPA 这个端口的人都能读到/改写 `quota-warmup.yaml` 全文。**如果 CPA 暴露在公网或不受信任网络，请在反向代理层限制 `/v0/resource` 的访问**（比如只放行管理网段、加一层 Basic Auth/IP allowlist），插件自身不提供这层保护。
+- **`quota-warmup.yaml` 严格白名单校验**：`validateWarmupYAMLContent` 通过 `decoder.KnownFields(true)` 进行严格白名单限制，未知键或注入结构直接 400 拦截；且必须为单一文档。
+- **权限安全与鉴权**：配置与动作接口全部挂载于 `/v0/management/plugins/cpa-quota-warmup/`，受 CPA 核心管理中间件强制鉴权保护；原子写盘自动保留原文件权限（避免被默认赋权为 0600）。
 - **`GET .../config-yaml/save` 的 `mtime` 冲突检测不是纯文件系统时间戳**：实测发现在这台开发机的文件系统上，两次紧挨着（无人为延迟）的原子写（temp+rename）会落在完全相同的纳秒级 `ModTime()` 上——如果直接拿 `ModTime()` 当 token，这种情况会被误判成"文件没变"，从而漏掉一次真实的并发冲突。已修复为 `ModTime + 本进程内的写入序号` 拼接成的 token（`mtimeToken`，见 `warmupfile.go`），保证同一个 `warmupFileManager` 实例做的任意两次写永远返回不同 token；但这只覆盖"这个进程自己做的写"之间的冲突检测，不同进程/外部编辑器在恰好同一纳秒各自写一次这种极端情况仍无法用纯 mtime 方案分辨（概率极低，且本来就不是这个机制设计要覆盖的场景）。回归测试见 `warmupfile_test.go` 的 `TestMtimeTokenDistinguishesWritesWithIdenticalModTime`/`TestOverwriteRawAlwaysProducesADistinctToken`。
 - `GET .../config-yaml/save` 的内容长度上限 256 KiB（按解码后的字节数算，不是 base64 编码后的 query string 长度），超过直接 400，不写盘。
 

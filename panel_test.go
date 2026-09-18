@@ -242,10 +242,17 @@ func TestHandleManagementRequestRoutesPanelStatusAndRun(t *testing.T) {
 	if ct := call("/v0/resource/plugins/cpa-quota-warmup/panel").Headers.Get("Content-Type"); !strings.Contains(ct, "text/html") {
 		t.Errorf(".../panel Content-Type = %q, want text/html", ct)
 	}
-	if ct := call("/v0/resource/plugins/cpa-quota-warmup/status").Headers.Get("Content-Type"); !strings.Contains(ct, "application/json") {
+	if ct := call("/v0/management/plugins/cpa-quota-warmup/status").Headers.Get("Content-Type"); !strings.Contains(ct, "application/json") {
 		t.Errorf(".../status Content-Type = %q, want application/json", ct)
 	}
-	if ct := call("/v0/resource/plugins/cpa-quota-warmup/run").Headers.Get("Content-Type"); !strings.Contains(ct, "application/json") {
+	if ct := call("/v0/management/plugins/cpa-quota-warmup/run").Headers.Get("Content-Type"); !strings.Contains(ct, "application/json") {
 		t.Errorf(".../run Content-Type = %q, want application/json", ct)
+	}
+	// Resource route for status/run must be rejected with 403 Forbidden.
+	if sc := call("/v0/resource/plugins/cpa-quota-warmup/status").StatusCode; sc != 403 {
+		t.Errorf("unauthenticated resource status route StatusCode = %d, want 403", sc)
+	}
+	if sc := call("/v0/resource/plugins/cpa-quota-warmup/run").StatusCode; sc != 403 {
+		t.Errorf("unauthenticated resource run route StatusCode = %d, want 403", sc)
 	}
 }

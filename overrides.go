@@ -99,11 +99,16 @@ func saveOverridesFile(path string, data modelOverrides) error {
 	if err != nil {
 		return fmt.Errorf("encode overrides: %w", err)
 	}
+	mode := os.FileMode(0o644)
+	if fi, statErr := os.Stat(path); statErr == nil {
+		mode = fi.Mode().Perm()
+	}
 	tmp, err := os.CreateTemp(filepath.Dir(path), ".overrides-*.tmp")
 	if err != nil {
 		return fmt.Errorf("create temp overrides file: %w", err)
 	}
 	tmpPath := tmp.Name()
+	_ = tmp.Chmod(mode)
 	defer func() { _ = os.Remove(tmpPath) }()
 	if _, err := tmp.Write(raw); err != nil {
 		_ = tmp.Close()

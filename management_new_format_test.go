@@ -79,7 +79,7 @@ func TestHandleSetRequestGlobalAndAuthOverrides(t *testing.T) {
 	e := registerNewFormat(t, yamlDoc)
 	e.auths = fakeAuthLister{entries: []pluginapi.HostAuthFileEntry{{Name: "a.json", Provider: "codex"}}}
 
-	const setPath = "/v0/resource/plugins/cpa-quota-warmup/set"
+	const setPath = "/v0/management/plugins/cpa-quota-warmup/set"
 
 	if status, body := callManagement(t, setPath, url.Values{"scope": {"bogus"}, "model": {"x"}}); status != http.StatusBadRequest {
 		t.Fatalf("invalid scope: status=%d body=%s", status, body)
@@ -123,7 +123,7 @@ func TestHandleStatusRequestNewFormatShowsTimeAccountsAndModelSource(t *testing.
 		{Name: "b.json", Provider: "codex"},
 	}}
 
-	status, body := callManagement(t, "/v0/resource/plugins/cpa-quota-warmup/status", nil)
+	status, body := callManagement(t, "/v0/management/plugins/cpa-quota-warmup/status", nil)
 	if status != http.StatusOK {
 		t.Fatalf("status: %d body=%s", status, body)
 	}

@@ -449,8 +449,6 @@ const panelHTMLTemplate = `<!doctype html>
   }
   document.title = t("ui_page_title");
 
-  var base = window.location.pathname.replace(/[^/]*$/, "");
-
   function esc(s) {
     var d = document.createElement("div");
     d.textContent = s === null || s === undefined ? "" : String(s);
@@ -540,6 +538,10 @@ const panelHTMLTemplate = `<!doctype html>
   // to the DOM, never sent to this plugin's own backend.
   function readConsoleManagementKey() {
     try {
+      var manualKey = sessionStorage.getItem("quota-warmup-management-key") || localStorage.getItem("quota-warmup-management-key");
+      if (manualKey) {
+        return { key: manualKey, apiBase: window.location.origin };
+      }
       var raw = localStorage.getItem("cli-proxy-auth");
       if (!raw) { return null; }
       var obj;
@@ -555,8 +557,33 @@ const panelHTMLTemplate = `<!doctype html>
       var apiBase = (obj.state.apiBase && String(obj.state.apiBase)) || window.location.origin;
       return { key: managementKey, apiBase: apiBase };
     } catch (err) {
+      var manualKey = sessionStorage.getItem("quota-warmup-management-key") || localStorage.getItem("quota-warmup-management-key");
+      if (manualKey) {
+        return { key: manualKey, apiBase: window.location.origin };
+      }
       return null;
     }
+  }
+
+  function getManagementApi() {
+    var auth = readConsoleManagementKey();
+    var apiOrigin = (auth && auth.apiBase) ? auth.apiBase.replace(/\/+$/, "") : window.location.origin;
+    var mgmtBase = apiOrigin + "/v0/management/plugins/cpa-quota-warmup/";
+    var headers = {};
+    if (auth && auth.key) {
+      headers["Authorization"] = "Bearer " + auth.key;
+    }
+    return { base: mgmtBase, headers: headers, auth: auth };
+  }
+
+  function promptForManagementKey(customMsg) {
+    var key = prompt((customMsg ? (customMsg + "\n") : "") + "请输入 CPA 管理密钥 (Management Key)：");
+    if (key && key.trim()) {
+      sessionStorage.setItem("quota-warmup-management-key", key.trim());
+      load();
+      return true;
+    }
+    return false;
   }
 
   // accountModelsCache/consoleModelsTTLMs are declared further below,
@@ -1188,20 +1215,34 @@ const panelHTMLTemplate = `<!doctype html>
   // the page-level error banner an explicit Save button used to rely on.
   function setFileAccount(row, name, enabled, timeVal, model) {
     row.classList.add("row-saving");
-    var url = base + "set?lang=" + encodeURIComponent(lang) + "&auth=" + encodeURIComponent(name);
-    if (enabled !== null && enabled !== undefined) { url += "&enabled=" + (enabled ? "true" : "false"); }
-    if (timeVal) { url += "&time=" + encodeURIComponent(timeVal); }
-    if (model) { url += "&model=" + encodeURIComponent(model); }
-    fetch(url, { cache: "no-store" })
-      .then(function (resp) { return resp.json().then(function (body) { return { ok: resp.ok, body: body }; }); })
+    var api = getManagementApi();
+    var payload = { auth: name };
+    if (enabled !== null && enabled !== undefined) { payload.enabled = enabled; }
+    if (timeVal) { payload.time = timeVal; }
+    if (model) { payload.model = model; }
+    var headers = Object.assign({}, api.headers, { "Content-Type": "application/json" });
+    fetch(api.base + "set?lang=" + encodeURIComponent(lang), {
+      method: "POST",
+      headers: headers,
+      body: JSON.stringify(payload),
+      cache: "no-store"
+    })
+      .then(function (resp) {
+        if (resp.status === 401) {
+          promptForManagementKey("未授权 (401)");
+          throw new Error("unauthorized");
+        }
+        return resp.json().then(function (body) { return { ok: resp.ok, body: body }; });
+      })
       .then(function (res) {
         row.classList.remove("row-saving");
         if (!res.ok) { flashRow(row, false, (res.body && res.body.error) || t("ui_set_failed")); return; }
         flashRow(row, true, res.body && res.body.warning ? res.body.warning : "");
         scheduleReload(1200);
       })
-      .catch(function () {
+      .catch(function (err) {
         row.classList.remove("row-saving");
+        if (err && err.message === "unauthorized") { return; }
         flashRow(row, false, t("ui_set_failed"));
       });
   }
@@ -1216,10 +1257,23 @@ const panelHTMLTemplate = `<!doctype html>
   function setModel(el, scope, authName, model) {
     var row = el.closest("tr");
     if (row) { row.classList.add("row-saving"); }
-    var url = base + "set?lang=" + encodeURIComponent(lang) + "&scope=" + encodeURIComponent(scope) + "&model=" + encodeURIComponent(model || "auto");
-    if (authName) { url += "&auth=" + encodeURIComponent(authName); }
-    fetch(url, { cache: "no-store" })
-      .then(function (resp) { return resp.json().then(function (body) { return { ok: resp.ok, body: body }; }); })
+    var api = getManagementApi();
+    var payload = { scope: scope, model: model || "auto" };
+    if (authName) { payload.auth = authName; }
+    var headers = Object.assign({}, api.headers, { "Content-Type": "application/json" });
+    fetch(api.base + "set?lang=" + encodeURIComponent(lang), {
+      method: "POST",
+      headers: headers,
+      body: JSON.stringify(payload),
+      cache: "no-store"
+    })
+      .then(function (resp) {
+        if (resp.status === 401) {
+          promptForManagementKey("未授权 (401)");
+          throw new Error("unauthorized");
+        }
+        return resp.json().then(function (body) { return { ok: resp.ok, body: body }; });
+      })
       .then(function (res) {
         if (row) { row.classList.remove("row-saving"); }
         if (!res.ok) {
@@ -1231,8 +1285,10 @@ const panelHTMLTemplate = `<!doctype html>
         if (row) { flashRow(row, true, warning); } else { showError(""); }
         scheduleReload(1200);
       })
-      .catch(function () {
-        if (row) { row.classList.remove("row-saving"); flashRow(row, false, t("ui_set_failed")); } else { showError(t("ui_set_failed")); }
+      .catch(function (err) {
+        if (row) { row.classList.remove("row-saving"); }
+        if (err && err.message === "unauthorized") { return; }
+        if (row) { flashRow(row, false, t("ui_set_failed")); } else { showError(t("ui_set_failed")); }
       });
   }
 
@@ -1348,8 +1404,16 @@ const panelHTMLTemplate = `<!doctype html>
     // visibly open over a now-detached input, or a keyboard/click handler
     // reacting against a stale comboActiveInput reference.
     closeCombo();
-    fetch(base + "status?lang=" + encodeURIComponent(lang), { cache: "no-store" })
-      .then(function (resp) { return resp.json().then(function (body) { return { ok: resp.ok, body: body }; }); })
+    var api = getManagementApi();
+    fetch(api.base + "status?lang=" + encodeURIComponent(lang), { headers: api.headers, cache: "no-store" })
+      .then(function (resp) {
+        if (resp.status === 401) {
+          showError("未授权 (401)：请在 CPA 管理控制台内打开此页面，或提供管理密钥。");
+          if (!api.auth) { promptForManagementKey(); }
+          throw new Error("unauthorized");
+        }
+        return resp.json().then(function (body) { return { ok: resp.ok, body: body }; });
+      })
       .then(function (res) {
         if (!res.ok) { showError(t("ui_load_failed")); return; }
         setComboModels(res.body.available_models);
@@ -1365,7 +1429,10 @@ const panelHTMLTemplate = `<!doctype html>
         renderAccounts(res.body.auths, isFileMode);
         renderRecent(res.body.recent);
       })
-      .catch(function () { showError(t("ui_load_failed")); });
+      .catch(function (err) {
+        if (err && err.message === "unauthorized") { return; }
+        showError(t("ui_load_failed"));
+      });
   }
 
   // configYamlMtime tracks the mtime of whatever quota-warmup.yaml content
@@ -1383,8 +1450,15 @@ const panelHTMLTemplate = `<!doctype html>
     var editor = document.getElementById("configYamlEditor");
     errBox.hidden = true;
     errBox.textContent = "";
-    fetch(base + "config-yaml?lang=" + encodeURIComponent(lang), { cache: "no-store" })
-      .then(function (resp) { return resp.json().then(function (body) { return { ok: resp.ok, body: body }; }); })
+    var api = getManagementApi();
+    fetch(api.base + "config-yaml?lang=" + encodeURIComponent(lang), { headers: api.headers, cache: "no-store" })
+      .then(function (resp) {
+        if (resp.status === 401) {
+          promptForManagementKey("未授权 (401)");
+          throw new Error("unauthorized");
+        }
+        return resp.json().then(function (body) { return { ok: resp.ok, body: body }; });
+      })
       .then(function (res) {
         if (!res.ok) {
           errBox.hidden = false;
@@ -1397,7 +1471,8 @@ const panelHTMLTemplate = `<!doctype html>
         if (res.body.error) { meta += "（" + res.body.error + "）"; }
         metaBox.textContent = meta;
       })
-      .catch(function () {
+      .catch(function (err) {
+        if (err && err.message === "unauthorized") { return; }
         errBox.hidden = false;
         errBox.textContent = t("ui_config_yaml_load_failed");
       });
@@ -1429,10 +1504,25 @@ const panelHTMLTemplate = `<!doctype html>
       errBox.textContent = t("ui_config_yaml_encode_error");
       return;
     }
-    var url = base + "config-yaml/save?lang=" + encodeURIComponent(lang) +
-      "&mtime=" + encodeURIComponent(configYamlMtime) + "&content=" + encoded;
-    fetch(url, { cache: "no-store" })
-      .then(function (resp) { return resp.json().then(function (body) { return { ok: resp.ok, body: body }; }); })
+    var api = getManagementApi();
+    var payload = {
+      content: encoded,
+      mtime: configYamlMtime
+    };
+    var headers = Object.assign({}, api.headers, { "Content-Type": "application/json" });
+    fetch(api.base + "config-yaml/save?lang=" + encodeURIComponent(lang), {
+      method: "POST",
+      headers: headers,
+      body: JSON.stringify(payload),
+      cache: "no-store"
+    })
+      .then(function (resp) {
+        if (resp.status === 401) {
+          promptForManagementKey("未授权 (401)");
+          throw new Error("unauthorized");
+        }
+        return resp.json().then(function (body) { return { ok: resp.ok, body: body }; });
+      })
       .then(function (res) {
         if (!res.ok) {
           var body = res.body || {};
@@ -1448,7 +1538,8 @@ const panelHTMLTemplate = `<!doctype html>
         metaBox.textContent = (res.body.path || "") + "  ·  " + (res.body.message || "");
         load();
       })
-      .catch(function () {
+      .catch(function (err) {
+        if (err && err.message === "unauthorized") { return; }
         errBox.hidden = false;
         errBox.textContent = t("ui_config_yaml_load_failed");
       });
@@ -1471,8 +1562,21 @@ const panelHTMLTemplate = `<!doctype html>
   document.getElementById("refreshBtn").addEventListener("click", load);
   document.getElementById("runBtn").addEventListener("click", function () {
     var glob = document.getElementById("authFilter").value.trim();
-    var url = base + "run?lang=" + encodeURIComponent(lang) + (glob ? "&auth=" + encodeURIComponent(glob) : "");
-    fetch(url, { cache: "no-store" }).then(function (resp) { return resp.json(); }).then(function (body) {
+    var api = getManagementApi();
+    var payload = { auth: glob };
+    var headers = Object.assign({}, api.headers, { "Content-Type": "application/json" });
+    fetch(api.base + "run?lang=" + encodeURIComponent(lang), {
+      method: "POST",
+      headers: headers,
+      body: JSON.stringify(payload),
+      cache: "no-store"
+    }).then(function (resp) {
+      if (resp.status === 401) {
+        promptForManagementKey("未授权 (401)");
+        throw new Error("unauthorized");
+      }
+      return resp.json();
+    }).then(function (body) {
       var box = document.getElementById("runResult");
       box.hidden = false;
       var parts = [];
@@ -1496,7 +1600,10 @@ const panelHTMLTemplate = `<!doctype html>
       }
       document.getElementById("runResultBody").innerHTML = parts.join("");
       load();
-    }).catch(function () { showError(t("ui_load_failed")); });
+    }).catch(function (err) {
+      if (err && err.message === "unauthorized") { return; }
+      showError(t("ui_load_failed"));
+    });
   });
 
   load();

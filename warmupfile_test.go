@@ -366,3 +366,55 @@ func TestOverwriteRawAlwaysProducesADistinctToken(t *testing.T) {
 		t.Fatalf("two successive overwriteRaw calls returned the same token %q, want distinct tokens", first)
 	}
 }
+
+func TestEnsureFreshDetectsMtimeChangeBackward(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "quota-warmup.yaml")
+	m := newWarmupFileManager(path)
+	entries := []pluginapi.HostAuthFileEntry{{Name: "a.json", Provider: "codex"}}
+	if err := m.ensureFresh(entries); err != nil {
+		t.Fatalf("ensureFresh: %v", err)
+	}
+
+	// Change file content on disk and set its ModTime backward into the past.
+	newContent := "defaults:\n  time: \"07:00\"\n  model: auto\naccounts: {}\n"
+	if err := os.WriteFile(path, []byte(newContent), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	pastTime := time.Now().Add(-1 * time.Hour)
+	if err := os.Chtimes(path, pastTime, pastTime); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+
+	// Calling ensureFresh must detect that the modTime is different from m.loadedAt and reparse.
+	if err := m.ensureFresh(nil); err != nil {
+		t.Fatalf("ensureFresh after past mtime: %v", err)
+	}
+	data, parseErr := m.snapshot()
+	if parseErr != "" {
+		t.Fatalf("unexpected parse error: %s", parseErr)
+	}
+	if len(data.Defaults.Time) != 1 || data.Defaults.Time[0] != "07:00" {
+		t.Fatalf("expected defaults.time to be 07:00, got %v", data.Defaults.Time)
+	}
+}
+
+func TestWriteAtomicLockedPreservesPermissions(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "quota-warmup.yaml")
+	if err := os.WriteFile(path, []byte("defaults:\n  time: \"05:30\"\n  model: auto\naccounts: {}\n"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	m := newWarmupFileManager(path)
+	m.mu.Lock()
+	err := m.writeAtomicLocked([]byte("defaults:\n  time: \"06:30\"\n  model: auto\naccounts: {}\n"))
+	m.mu.Unlock()
+	if err != nil {
+		t.Fatalf("writeAtomicLocked: %v", err)
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if perm := fi.Mode().Perm(); perm != 0o644 {
+		t.Fatalf("expected permissions 0644 after atomic write, got %04o", perm)
+	}
+}
